@@ -1,9 +1,11 @@
-const VERSION = 'lysipos-v1';
+const VERSION = 'lysipos-v2';
 const CORE = [
   './',
   './index.html',
   './styles.css',
   './app.js',
+  './codes.js',
+  './scanner.js',
   './manifest.json',
   './icon.svg',
   './icon-maskable.svg',

@@ -1,6 +1,9 @@
 // LysiPOS — SaaS · CRM · POS (single-file app)
 // Vanilla JS ES module. IndexedDB storage, hash router, offline-first.
 
+import { code128BSvg, qrSvg } from './codes.js';
+import { openScanner, isScannerSupported } from './scanner.js';
+
 /* -------------------- utilities -------------------- */
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -73,8 +76,8 @@ function confirmModal(message, { danger = false, okText = 'OK', cancelText = 'Ca
 
 /* -------------------- IndexedDB layer -------------------- */
 const DB_NAME = 'lysipos';
-const DB_VER = 1;
-const STORES = ['settings', 'users', 'products', 'categories', 'customers', 'sales', 'audit'];
+const DB_VER = 3;
+const STORES = ['settings', 'users', 'products', 'categories', 'customers', 'sales', 'audit', 'suppliers', 'expenses', 'backups'];
 
 function openDB() {
   return new Promise((resolve, reject) => {
@@ -130,6 +133,8 @@ const state = {
   products: [],
   categories: [],
   customers: [],
+  suppliers: [],
+  expenses: [],
   sales: [],
   settings: null,
   cart: { items: [], discount: 0, customerId: null, note: '' },
@@ -149,20 +154,25 @@ const DEFAULT_SETTINGS = {
   theme: 'dark',
   loyaltyPerCurrency: 1, // 1 point per 1 currency spent
   loyaltyRedeemValue: 0.01, // 1 point = 0.01 currency
+  autoBackup: 'daily', // off | daily | weekly
+  autoBackupKeep: 10,
+  lastAutoBackupAt: null,
   onboarded: false
 };
 
 async function loadAll() {
-  const [settings, users, products, categories, customers, sales] = await Promise.all([
+  const [settings, users, products, categories, customers, suppliers, expenses, sales] = await Promise.all([
     dbGet('settings', 'app'),
     dbGetAll('users'), dbGetAll('products'), dbGetAll('categories'),
-    dbGetAll('customers'), dbGetAll('sales')
+    dbGetAll('customers'), dbGetAll('suppliers'), dbGetAll('expenses'), dbGetAll('sales')
   ]);
   state.settings = settings || DEFAULT_SETTINGS;
   state.users = users;
   state.products = products;
   state.categories = categories;
   state.customers = customers;
+  state.suppliers = suppliers;
+  state.expenses = expenses;
   state.sales = sales;
   document.documentElement.dataset.theme = state.settings.theme || 'dark';
 }
@@ -176,6 +186,186 @@ async function saveSettings() {
 async function audit(action, meta = {}) {
   const entry = { id: uid('a_'), at: nowISO(), by: state.user?.id || null, byName: state.user?.name || 'system', action, meta };
   await dbPut('audit', entry);
+}
+
+/* -------------------- backup / import helpers -------------------- */
+function snapshotData() {
+  return {
+    exportedAt: nowISO(),
+    settings: state.settings,
+    users: state.users,
+    products: state.products,
+    categories: state.categories,
+    customers: state.customers,
+    suppliers: state.suppliers,
+    expenses: state.expenses,
+    sales: state.sales
+  };
+}
+
+// Convert a Convex-style dump (with _id/_creationTime, saleItems separate) to LysiPOS shape.
+function convertConvexBackup(raw) {
+  const now = nowISO();
+  const cashierIds = new Set();
+  for (const s of raw.sales || []) if (s.userId) cashierIds.add(s.userId);
+  for (const e of raw.expenses || []) if (e.userId) cashierIds.add(e.userId);
+  const userIdMap = {}; const users = []; let i = 0;
+  for (const cid of cashierIds) {
+    const id = 'u_' + String(cid).slice(0, 8);
+    userIdMap[cid] = { id, name: 'Imported cashier ' + (++i) };
+    users.push({ id, name: userIdMap[cid].name, email: `cashier${i}@lysipos.local`, role: 'cashier', active: true, passHash: '', createdAt: now });
+  }
+  const categories = (raw.categories || []).map(c => ({ id: c._id, name: c.name }));
+  const suppliers = (raw.suppliers || []).map(s => ({
+    id: s._id, name: s.name || '(unnamed)', contact: s.contactName || '',
+    email: s.email || '', phone: s.phone || '', address: s.address || '',
+    terms: '', tags: [], notes: '', active: s.isActive !== false,
+    createdAt: new Date(s._creationTime || Date.now()).toISOString()
+  }));
+  const products = (raw.products || []).map(p => ({
+    id: p._id, name: p.name, sku: p.sku || '', barcode: p.sku || '',
+    category: p.categoryId || '', supplierId: '',
+    price: Number(p.price) || 0, cost: Number(p.cost) || 0, stock: Number(p.stock) || 0,
+    taxable: true, active: p.isActive !== false,
+    unit: p.unit || 'pcs', lowStockThreshold: Number(p.lowStockThreshold) || 5,
+    createdAt: new Date(p._creationTime || Date.now()).toISOString()
+  }));
+  const itemsBySale = new Map();
+  for (const it of raw.saleItems || []) {
+    if (!itemsBySale.has(it.saleId)) itemsBySale.set(it.saleId, []);
+    itemsBySale.get(it.saleId).push({
+      productId: it.productId, name: it.productName,
+      price: Number(it.unitPrice) || 0, qty: Number(it.quantity) || 0,
+      taxable: (Number(it.taxRate) || 0) > 0
+    });
+  }
+  const sales = (raw.sales || []).map(s => ({
+    id: s._id, number: s.receiptNumber || 'S' + String(s._id).slice(-8).toUpperCase(),
+    items: itemsBySale.get(s._id) || [],
+    customerId: null,
+    discount: Number(s.discount) || 0,
+    tax: Number(s.taxTotal) || 0,
+    subtotal: Number(s.subtotal) || 0,
+    total: Number(s.total) || 0,
+    payment: {
+      method: s.paymentMethod || 'cash',
+      tendered: Number(s.amountPaid) || Number(s.total) || 0,
+      change: Number(s.change) || 0
+    },
+    cashier: userIdMap[s.userId] || { id: '', name: 'Imported' },
+    note: '',
+    createdAt: s.date || new Date(s._creationTime || Date.now()).toISOString(),
+    refunded: s.status === 'refunded' || s.status === 'voided'
+  }));
+  const expenseCatMap = {};
+  for (const c of raw.expenseCategories || []) expenseCatMap[c._id] = c.name;
+  const expenses = (raw.expenses || []).map(e => ({
+    id: e._id, amount: Number(e.amount) || 0,
+    description: e.description || '',
+    category: expenseCatMap[e.categoryId] || 'General',
+    date: e.date || new Date(e._creationTime || Date.now()).toISOString(),
+    userId: userIdMap[e.userId]?.id || '',
+    createdAt: new Date(e._creationTime || Date.now()).toISOString()
+  }));
+  return {
+    exportedAt: now, importedFrom: 'convex-style',
+    settings: { ...DEFAULT_SETTINGS, businessName: 'Imported Store' },
+    users, categories, suppliers, products, customers: [], sales, expenses
+  };
+}
+
+// Detect format and normalize to LysiPOS shape.
+function normalizeImport(data) {
+  if (!data || typeof data !== 'object') throw new Error('Not a JSON object');
+  const looksNative = Array.isArray(data.products) && data.products.some(p => 'id' in p && !('_id' in p));
+  const looksConvex = Array.isArray(data.products) && data.products.some(p => '_id' in p);
+  if (looksConvex && !looksNative) return convertConvexBackup(data);
+  // Native LysiPOS backup
+  return data;
+}
+
+async function applyImport(data) {
+  const norm = normalizeImport(data);
+  for (const store of ['products', 'categories', 'customers', 'suppliers', 'sales', 'users', 'expenses']) {
+    await dbClear(store);
+    for (const row of (norm[store] || [])) await dbPut(store, row);
+  }
+  if (norm.settings) await dbPut('settings', { ...DEFAULT_SETTINGS, ...norm.settings, key: 'app' });
+  await loadAll();
+  await audit('data.import', {
+    products: (norm.products || []).length,
+    sales: (norm.sales || []).length,
+    suppliers: (norm.suppliers || []).length,
+    categories: (norm.categories || []).length,
+    expenses: (norm.expenses || []).length
+  });
+  return norm;
+}
+
+/* Rolling in-app backups */
+async function saveRollingBackup(reason = 'manual') {
+  const data = snapshotData();
+  const rec = { id: uid('b_'), at: nowISO(), reason, size: JSON.stringify(data).length, data };
+  await dbPut('backups', rec);
+  // rotate: keep only autoBackupKeep newest
+  const keep = Number(state.settings.autoBackupKeep) || 10;
+  const all = (await dbGetAll('backups')).sort((a, b) => (a.at < b.at ? 1 : -1));
+  for (const old of all.slice(keep)) await dbDel('backups', old.id);
+  return rec;
+}
+
+/* File System Access API — optional per-folder auto-save (Chrome/Edge) */
+const FS_KEY = 'lysipos:backupDir';
+async function pickBackupFolder() {
+  if (!('showDirectoryPicker' in window)) { toast('Your browser does not support folder picking. Backups will download instead.', 'warn'); return null; }
+  try {
+    const handle = await window.showDirectoryPicker({ id: 'lysipos-backups', mode: 'readwrite' });
+    // Store via IndexedDB directly (settings store keeps only serializable stuff)
+    const t = await tx('settings', 'readwrite');
+    await new Promise((res, rej) => { const r = t.objectStore('settings').put({ key: FS_KEY, handle }); r.onsuccess = res; r.onerror = () => rej(r.error); });
+    toast('Backup folder linked', 'good');
+    return handle;
+  } catch (e) { if (e?.name !== 'AbortError') toast('Folder pick failed: ' + e.message, 'bad'); return null; }
+}
+async function getBackupFolder() {
+  const rec = await dbGet('settings', FS_KEY);
+  const handle = rec?.handle;
+  if (!handle) return null;
+  try {
+    const perm = await handle.queryPermission({ mode: 'readwrite' });
+    if (perm === 'granted') return handle;
+    const req = await handle.requestPermission({ mode: 'readwrite' });
+    return req === 'granted' ? handle : null;
+  } catch { return null; }
+}
+async function writeBackupToFolder(handle, jsonText) {
+  const fname = `lysipos-backup-${dayKey()}.json`;
+  const fh = await handle.getFileHandle(fname, { create: true });
+  const w = await fh.createWritable();
+  await w.write(jsonText); await w.close();
+  return fname;
+}
+
+async function maybeAutoBackup() {
+  const s = state.settings;
+  if (!s || s.autoBackup === 'off' || !s.autoBackup) return;
+  const last = s.lastAutoBackupAt ? new Date(s.lastAutoBackupAt).getTime() : 0;
+  const now = Date.now();
+  const intervalMs = s.autoBackup === 'weekly' ? 7 * 864e5 : 864e5;
+  if (now - last < intervalMs) return;
+  try {
+    const rec = await saveRollingBackup('auto');
+    state.settings.lastAutoBackupAt = nowISO();
+    await saveSettings();
+    // Try folder write
+    const handle = await getBackupFolder();
+    if (handle) {
+      try { const name = await writeBackupToFolder(handle, JSON.stringify(rec.data, null, 2)); toast('Auto-backup saved to folder: ' + name, 'good'); }
+      catch (e) { console.warn('Folder write failed', e); toast('Auto-backup saved in-app (folder write failed)', 'warn'); }
+    } else {
+      toast('Auto-backup saved (in-app)', 'good');
+    }
+  } catch (e) { console.error(e); }
 }
 
 /* -------------------- seeding -------------------- */
@@ -217,6 +407,20 @@ async function seedIfEmpty() {
       await dbPut('products', {
         id: uid('p_'), name, price, cost, category, stock, barcode, sku,
         taxable: true, active: true, createdAt: nowISO()
+      });
+    }
+  }
+  const sups = await dbGetAll('suppliers');
+  if (sups.length === 0) {
+    const demo = [
+      ['Global Beans Co.', 'Maria Chen', 'orders@globalbeans.example', '+1 555-0201', 'Net 30', ['coffee','wholesale']],
+      ['Sunrise Bakery Supply', 'Ade Okoro', 'sales@sunrisebakery.example', '+1 555-0202', 'Net 15', ['bakery']],
+      ['ValuMart Distributors', 'Priya Rao', 'info@valumart.example', '+1 555-0203', 'COD', ['grocery','household']]
+    ];
+    for (const [name, contact, email, phone, terms, tags] of demo) {
+      await dbPut('suppliers', {
+        id: uid('sp_'), name, contact, email, phone, address: '',
+        terms, tags, notes: '', active: true, createdAt: nowISO()
       });
     }
   }
@@ -320,6 +524,8 @@ function shell() {
           <a href="#/sales">🧮 Sales</a>
           <a href="#/products">📦 Products</a>
           <a href="#/inventory">🗃️ Inventory</a>
+          <a href="#/labels">🏷️ Labels</a>
+          <a href="#/suppliers">🚚 Suppliers</a>
           <div class="section">CRM</div>
           <a href="#/customers">👥 Customers</a>
           <a href="#/reports">📈 Reports</a>
@@ -760,6 +966,7 @@ route('/pos', async () => {
     <div class="catalog">
       <div class="filters">
         <input id="posSearch" placeholder="Search name, SKU or scan barcode…" autofocus />
+        <button class="btn" id="posScan" title="Scan with camera">📷 Scan</button>
         <select id="posCat" style="max-width:180px">
           <option value="">All categories</option>
           ${state.categories.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}
@@ -793,6 +1000,16 @@ route('/pos', async () => {
       }
     });
     $('#posCat', el).addEventListener('change', (e) => { POS.filterCategory = e.target.value; renderCatalog(); });
+    $('#posScan', el).addEventListener('click', async () => {
+      if (!isScannerSupported()) { toast('Camera scanning not supported on this browser. Use a keyboard-wedge scanner instead.', 'warn'); return; }
+      try {
+        const { value, format } = await openScanner();
+        const term = String(value).trim();
+        const exact = state.products.find(p => p.barcode === term || p.sku?.toLowerCase() === term.toLowerCase());
+        if (exact) { addToCart(exact); toast(`Added: ${exact.name} (${format})`, 'good'); }
+        else { $('#posSearch', el).value = term; POS.filterText = term; renderCatalog(); toast(`Scanned ${format}: ${term} — no product found`, 'warn'); }
+      } catch (e) { if (e.message !== 'cancelled') toast(e.message, 'bad'); }
+    });
     $('#cartClear', el).addEventListener('click', async () => {
       if (state.cart.items.length && !(await confirmModal('Clear the current sale?'))) return;
       state.cart = { items: [], discount: 0, customerId: null, note: '' };
@@ -842,9 +1059,18 @@ function productForm(existing = {}) {
     <div class="grid cols-2">
       <div class="field"><label>Name</label><input name="name" value="${escapeHtml(existing.name || '')}" /></div>
       <div class="field"><label>SKU</label><input name="sku" value="${escapeHtml(existing.sku || '')}" /></div>
-      <div class="field"><label>Barcode</label><input name="barcode" value="${escapeHtml(existing.barcode || '')}" /></div>
+      <div class="field"><label>Barcode</label>
+        <div style="display:flex;gap:6px">
+          <input name="barcode" value="${escapeHtml(existing.barcode || '')}" style="flex:1" />
+          <button type="button" class="btn small" data-scan-code title="Scan with camera">📷</button>
+          <button type="button" class="btn small" data-copy-sku title="Copy SKU into Barcode">= SKU</button>
+        </div>
+      </div>
       <div class="field"><label>Category</label>
         <select name="category"><option value="">—</option>${state.categories.map(c => `<option value="${c.id}" ${existing.category === c.id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>Supplier</label>
+        <select name="supplierId"><option value="">—</option>${state.suppliers.map(sp => `<option value="${sp.id}" ${existing.supplierId === sp.id ? 'selected' : ''}>${escapeHtml(sp.name)}</option>`).join('')}</select>
       </div>
       <div class="field"><label>Price</label><input name="price" type="number" step="0.01" min="0" value="${existing.price ?? 0}" /></div>
       <div class="field"><label>Cost</label><input name="cost" type="number" step="0.01" min="0" value="${existing.cost ?? 0}" /></div>
@@ -879,7 +1105,7 @@ route('/products', async () => {
       </div>
       <div class="card-b" style="overflow:auto;max-height:calc(100vh - 220px)">
         <table class="data" id="pTable">
-          <thead><tr><th>Name</th><th>SKU</th><th>Category</th><th class="right">Price</th><th class="right">Stock</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>SKU</th><th>Category</th><th>Supplier</th><th class="right">Price</th><th class="right">Stock</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -892,15 +1118,17 @@ route('/products', async () => {
     if (term) list = list.filter(p => p.name.toLowerCase().includes(term) || (p.sku || '').toLowerCase().includes(term) || (p.barcode || '').includes(term));
     if (cat) list = list.filter(p => p.category === cat);
     const catName = (id) => state.categories.find(c => c.id === id)?.name || '—';
+    const supName = (id) => state.suppliers.find(s => s.id === id)?.name || '—';
     $('tbody', el).innerHTML = list.map(p => html`
       <tr data-id="${p.id}">
         <td>${escapeHtml(p.name)} ${p.active === false ? '<span class="badge">inactive</span>' : ''}</td>
         <td class="mono">${escapeHtml(p.sku || '')}</td>
         <td>${escapeHtml(catName(p.category))}</td>
+        <td>${escapeHtml(supName(p.supplierId))}</td>
         <td class="right mono">${money(p.price)}</td>
         <td class="right"><span class="badge ${p.stock <= 0 ? 'bad' : p.stock <= 5 ? 'warn' : 'good'}">${p.stock ?? 0}</span></td>
         <td class="right"><button class="btn small" data-edit>Edit</button> <button class="btn small danger" data-del>Delete</button></td>
-      </tr>`).join('') || `<tr><td colspan="6"><div class="empty">No products</div></td></tr>`;
+      </tr>`).join('') || `<tr><td colspan="7"><div class="empty">No products</div></td></tr>`;
 
     el.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => {
       const id = b.closest('tr').dataset.id; const p = state.products.find(x => x.id === id);
@@ -916,6 +1144,79 @@ route('/products', async () => {
 
   const openProduct = (existing) => {
     const body = productForm(existing || {});
+    // Barcode / QR preview + generate panel
+    const previewBox = document.createElement('div');
+    previewBox.style.marginTop = '10px';
+    previewBox.innerHTML = html`
+      <div class="card"><div class="card-h"><h3>Label preview</h3><div class="spacer"></div>
+        <span class="pill" id="pvKind">Barcode (Code128)</span>
+      </div>
+        <div class="card-b">
+          <div class="row" style="margin-bottom:8px">
+            <button type="button" class="btn small" data-pv-bar>📊 Show barcode</button>
+            <button type="button" class="btn small" data-pv-qr>▦ Show QR (product info)</button>
+            <button type="button" class="btn small" data-pv-dl>⤓ Download SVG</button>
+          </div>
+          <div id="pvOut" style="background:#fff;padding:14px;border-radius:10px;display:grid;place-items:center;min-height:120px"></div>
+          <div class="muted" style="margin-top:6px;font-size:12px">Barcode encodes the <b>Barcode</b> field (or SKU if blank). QR encodes JSON with name/SKU/price so any QR reader shows product details.</div>
+        </div>
+      </div>`;
+    body.appendChild(previewBox);
+
+    const renderPreview = (kind = 'bar') => {
+      const d = readForm(body);
+      const out = $('#pvOut', previewBox);
+      const kindPill = $('#pvKind', previewBox);
+      try {
+        if (kind === 'qr') {
+          const payload = JSON.stringify({ name: d.name || '', sku: d.sku || '', barcode: d.barcode || '', price: Number(d.price) || 0 });
+          out.innerHTML = qrSvg(payload, { scale: 5, margin: 3 });
+          kindPill.textContent = 'QR code';
+          previewBox.dataset.kind = 'qr';
+          previewBox.dataset.value = payload;
+        } else {
+          const value = (d.barcode || d.sku || '').trim();
+          if (!value) { out.innerHTML = '<div class="muted">Enter a Barcode or SKU to preview.</div>'; return; }
+          out.innerHTML = code128BSvg(value, { moduleWidth: 2, height: 60 });
+          kindPill.textContent = 'Barcode (Code128)';
+          previewBox.dataset.kind = 'bar';
+          previewBox.dataset.value = value;
+        }
+      } catch (e) { out.innerHTML = `<div class="muted">Cannot render: ${escapeHtml(e.message)}</div>`; }
+    };
+
+    queueMicrotask(() => {
+      renderPreview('bar');
+      previewBox.querySelector('[data-pv-bar]').addEventListener('click', () => renderPreview('bar'));
+      previewBox.querySelector('[data-pv-qr]').addEventListener('click', () => renderPreview('qr'));
+      previewBox.querySelector('[data-pv-dl]').addEventListener('click', () => {
+        const svg = $('#pvOut', previewBox).innerHTML;
+        if (!svg.startsWith('<svg')) { toast('Nothing to download', 'warn'); return; }
+        const blob = new Blob([svg], { type: 'image/svg+xml' });
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+        const label = (readForm(body).sku || 'label').replace(/[^\w-]+/g, '_');
+        a.download = `${label}-${previewBox.dataset.kind}.svg`; a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      });
+      // Live-refresh when relevant inputs change
+      body.querySelectorAll('input[name="sku"], input[name="barcode"], input[name="name"], input[name="price"]').forEach(inp => {
+        inp.addEventListener('input', () => renderPreview(previewBox.dataset.kind || 'bar'));
+      });
+      body.querySelector('[data-copy-sku]')?.addEventListener('click', () => {
+        const sku = body.querySelector('input[name="sku"]').value.trim();
+        body.querySelector('input[name="barcode"]').value = sku;
+        renderPreview('bar');
+      });
+      body.querySelector('[data-scan-code]')?.addEventListener('click', async () => {
+        if (!isScannerSupported()) { toast('Camera scanning not supported. Use a keyboard-wedge scanner into the field.', 'warn'); return; }
+        try {
+          const { value } = await openScanner();
+          body.querySelector('input[name="barcode"]').value = value;
+          renderPreview('bar');
+        } catch (e) { if (e.message !== 'cancelled') toast(e.message, 'bad'); }
+      });
+    });
+
     const foot = document.createElement('div');
     foot.innerHTML = '<button class="btn ghost" data-cancel>Cancel</button><button class="btn primary" data-save>Save</button>';
     const m = openModal({ title: existing ? 'Edit product' : 'New product', body, footer: foot, size: 'lg' });
@@ -926,6 +1227,7 @@ route('/products', async () => {
       const rec = existing ? { ...existing } : { id: uid('p_'), createdAt: nowISO() };
       Object.assign(rec, {
         name: d.name.trim(), sku: d.sku.trim(), barcode: d.barcode.trim(), category: d.category || '',
+        supplierId: d.supplierId || '',
         price: Number(d.price) || 0, cost: Number(d.cost) || 0, stock: Number(d.stock) || 0,
         taxable: d.taxable === '1', active: d.active === '1'
       });
@@ -1024,6 +1326,125 @@ route('/inventory', async () => {
       toast('Restocked all products', 'good'); rerender();
     });
     rerender();
+  });
+  return el;
+});
+
+/* Labels — print sheets of product barcodes / QR codes */
+route('/labels', async () => {
+  const el = document.createElement('div');
+  el.className = 'page';
+  el.innerHTML = html`
+    <h1>Labels</h1><div class="sub">Generate printable sheets of product barcodes or QR codes.</div>
+    <div class="card no-print">
+      <div class="card-h">
+        <label style="margin:0 6px 0 0">Type:</label>
+        <select id="lbKind" style="max-width:160px">
+          <option value="bar">Barcode (Code128)</option>
+          <option value="qr">QR (product info)</option>
+        </select>
+        <label style="margin:0 6px 0 12px">Columns:</label>
+        <select id="lbCols" style="max-width:100px">
+          <option>2</option><option selected>3</option><option>4</option><option>5</option>
+        </select>
+        <input id="lbFilter" placeholder="Filter products…" style="max-width:220px;margin-left:12px" />
+        <div class="spacer"></div>
+        <button class="btn small" id="lbAll">Select all filtered</button>
+        <button class="btn small" id="lbNone">Clear</button>
+        <button class="btn primary small" id="lbPrint">🖨 Print</button>
+      </div>
+      <div class="card-b" style="max-height:280px;overflow:auto">
+        <table class="data">
+          <thead><tr><th style="width:32px"></th><th>Name</th><th>SKU</th><th>Barcode</th><th class="right">Qty</th></tr></thead>
+          <tbody id="lbList"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <div class="card-h no-print"><h3>Preview</h3><div class="spacer"></div><span class="pill" id="lbCount">0 labels</span></div>
+      <div class="card-b" style="background:#fff;color:#000;padding:12px">
+        <div id="lbSheet" style="display:grid;gap:8px"></div>
+      </div>
+    </div>`;
+
+  // In-memory selection: pid -> qty
+  const selection = new Map();
+
+  const rebuildList = () => {
+    const term = ($('#lbFilter', el).value || '').trim().toLowerCase();
+    const list = state.products.filter(p => p.active !== false && (!term ||
+      p.name.toLowerCase().includes(term) || (p.sku || '').toLowerCase().includes(term) || (p.barcode || '').includes(term)))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    $('#lbList', el).innerHTML = list.map(p => html`
+      <tr data-id="${p.id}">
+        <td><input type="checkbox" ${selection.has(p.id) ? 'checked' : ''} data-sel></td>
+        <td>${escapeHtml(p.name)}</td>
+        <td class="mono">${escapeHtml(p.sku || '')}</td>
+        <td class="mono">${escapeHtml(p.barcode || '')}</td>
+        <td class="right"><input type="number" min="1" max="99" value="${selection.get(p.id) || 1}" style="width:64px;text-align:right" data-qty></td>
+      </tr>`).join('') || `<tr><td colspan="5"><div class="empty">No matching products</div></td></tr>`;
+    el.querySelectorAll('[data-sel]').forEach(cb => cb.addEventListener('change', (e) => {
+      const id = e.target.closest('tr').dataset.id;
+      const qty = Number(e.target.closest('tr').querySelector('[data-qty]').value) || 1;
+      if (e.target.checked) selection.set(id, qty); else selection.delete(id);
+      renderSheet();
+    }));
+    el.querySelectorAll('[data-qty]').forEach(inp => inp.addEventListener('input', (e) => {
+      const id = e.target.closest('tr').dataset.id;
+      if (selection.has(id)) { selection.set(id, Math.max(1, Number(e.target.value) || 1)); renderSheet(); }
+    }));
+  };
+
+  const renderSheet = () => {
+    const kind = $('#lbKind', el).value;
+    const cols = Number($('#lbCols', el).value) || 3;
+    const sheet = $('#lbSheet', el);
+    sheet.style.gridTemplateColumns = `repeat(${cols}, minmax(0,1fr))`;
+    let n = 0;
+    let html2 = '';
+    for (const [pid, qty] of selection.entries()) {
+      const p = state.products.find(x => x.id === pid); if (!p) continue;
+      for (let i = 0; i < qty; i++) {
+        n++;
+        let svg = '';
+        try {
+          if (kind === 'qr') {
+            const payload = JSON.stringify({ name: p.name, sku: p.sku, barcode: p.barcode, price: p.price });
+            svg = qrSvg(payload, { scale: 4, margin: 2 });
+          } else {
+            const val = p.barcode || p.sku || p.name;
+            svg = code128BSvg(val, { moduleWidth: 2, height: 50 });
+          }
+        } catch (e) { svg = `<div style="color:#c00">${escapeHtml(e.message)}</div>`; }
+        html2 += `<div style="border:1px dashed #ccc;border-radius:8px;padding:8px;text-align:center;background:#fff">
+          <div style="font-size:11px;font-weight:600;margin-bottom:4px;color:#000">${escapeHtml(p.name)}</div>
+          <div style="display:grid;place-items:center">${svg}</div>
+          <div style="font-size:10px;color:#333;margin-top:2px">${escapeHtml(state.settings.currency)} ${Number(p.price || 0).toFixed(2)}</div>
+        </div>`;
+      }
+    }
+    sheet.innerHTML = html2 || '<div class="muted" style="grid-column:1/-1;text-align:center;padding:40px">Select products above.</div>';
+    $('#lbCount', el).textContent = `${n} label${n === 1 ? '' : 's'}`;
+  };
+
+  queueMicrotask(() => {
+    $('#lbFilter', el).addEventListener('input', rebuildList);
+    $('#lbKind', el).addEventListener('change', renderSheet);
+    $('#lbCols', el).addEventListener('change', renderSheet);
+    $('#lbAll', el).addEventListener('click', () => {
+      el.querySelectorAll('#lbList tr').forEach(tr => {
+        const id = tr.dataset.id;
+        const qty = Number(tr.querySelector('[data-qty]')?.value) || 1;
+        selection.set(id, qty);
+        const cb = tr.querySelector('[data-sel]'); if (cb) cb.checked = true;
+      });
+      renderSheet();
+    });
+    $('#lbNone', el).addEventListener('click', () => {
+      selection.clear(); rebuildList(); renderSheet();
+    });
+    $('#lbPrint', el).addEventListener('click', () => window.print());
+    rebuildList(); renderSheet();
   });
   return el;
 });
@@ -1142,6 +1563,134 @@ route('/customers', async () => {
   queueMicrotask(() => {
     $('#cFilter', el).addEventListener('input', rerender);
     $('#cNew', el).addEventListener('click', () => openCustomer(null));
+    rerender();
+  });
+  return el;
+});
+
+/* Suppliers */
+function supplierForm(existing = {}) {
+  const body = document.createElement('div');
+  body.innerHTML = html`
+    <div class="grid cols-2">
+      <div class="field"><label>Supplier name</label><input name="name" value="${escapeHtml(existing.name || '')}" /></div>
+      <div class="field"><label>Contact person</label><input name="contact" value="${escapeHtml(existing.contact || '')}" /></div>
+      <div class="field"><label>Email</label><input name="email" type="email" value="${escapeHtml(existing.email || '')}" /></div>
+      <div class="field"><label>Phone</label><input name="phone" value="${escapeHtml(existing.phone || '')}" /></div>
+      <div class="field"><label>Payment terms</label><input name="terms" placeholder="e.g. Net 30, COD, Prepaid" value="${escapeHtml(existing.terms || '')}" /></div>
+      <div class="field"><label>Tags (comma separated)</label><input name="tags" value="${escapeHtml((existing.tags || []).join(', '))}" /></div>
+      <div class="field" style="grid-column:1/-1"><label>Address</label><input name="address" value="${escapeHtml(existing.address || '')}" /></div>
+      <div class="field" style="grid-column:1/-1"><label>Notes</label><textarea name="notes" rows="3">${escapeHtml(existing.notes || '')}</textarea></div>
+      <div class="field"><label>Active</label>
+        <select name="active"><option value="1" ${existing.active !== false ? 'selected' : ''}>Yes</option><option value="0" ${existing.active === false ? 'selected' : ''}>No</option></select>
+      </div>
+    </div>`;
+  return body;
+}
+
+route('/suppliers', async () => {
+  const el = document.createElement('div');
+  el.className = 'page';
+  el.innerHTML = html`
+    <h1>Suppliers</h1><div class="sub">Vendors you buy inventory from — link products to them for sourcing and cost tracking.</div>
+    <div class="card">
+      <div class="card-h">
+        <input id="spFilter" placeholder="Search name, contact or tag…" style="max-width:280px" />
+        <div class="spacer"></div>
+        <button class="btn primary small" id="spNew">+ New supplier</button>
+      </div>
+      <div class="card-b" style="overflow:auto;max-height:calc(100vh - 220px)">
+        <table class="data">
+          <thead><tr><th>Name</th><th>Contact</th><th>Email</th><th>Phone</th><th>Terms</th><th class="right">Products</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>`;
+
+  const openSupplier = (existing) => {
+    const body = supplierForm(existing || {});
+    // Show linked products if editing an existing supplier
+    if (existing) {
+      const linked = state.products.filter(p => p.supplierId === existing.id);
+      const box = document.createElement('div');
+      box.style.marginTop = '10px';
+      box.innerHTML = html`
+        <div class="card"><div class="card-h"><h3>Linked products (${linked.length})</h3></div>
+          <div class="card-b" style="max-height:220px;overflow:auto">
+            ${linked.length ? `<table class="data"><thead><tr><th>Product</th><th>SKU</th><th class="right">Cost</th><th class="right">Stock</th></tr></thead><tbody>${linked.map(p => `<tr><td>${escapeHtml(p.name)}</td><td class="mono">${escapeHtml(p.sku || '')}</td><td class="right mono">${money(p.cost || 0)}</td><td class="right">${p.stock ?? 0}</td></tr>`).join('')}</tbody></table>` : '<div class="muted">No products linked yet. Assign this supplier in Products → Edit.</div>'}
+          </div>
+        </div>`;
+      body.appendChild(box);
+    }
+    const foot = document.createElement('div');
+    foot.innerHTML = '<button class="btn ghost" data-cancel>Cancel</button><button class="btn primary" data-save>Save</button>';
+    const m = openModal({ title: existing ? existing.name : 'New supplier', body, footer: foot, size: 'lg' });
+    foot.querySelector('[data-cancel]').addEventListener('click', m.close);
+    foot.querySelector('[data-save]').addEventListener('click', async () => {
+      const d = readForm(body);
+      if (!d.name?.trim()) return toast('Supplier name required', 'bad');
+      const rec = existing ? { ...existing } : { id: uid('sp_'), createdAt: nowISO() };
+      Object.assign(rec, {
+        name: d.name.trim(), contact: d.contact.trim(), email: d.email.trim(),
+        phone: d.phone.trim(), terms: d.terms.trim(), address: d.address, notes: d.notes,
+        tags: d.tags.split(',').map(s => s.trim()).filter(Boolean),
+        active: d.active === '1'
+      });
+      await dbPut('suppliers', rec);
+      const idx = state.suppliers.findIndex(x => x.id === rec.id);
+      if (idx >= 0) state.suppliers[idx] = rec; else state.suppliers.push(rec);
+      audit(existing ? 'supplier.update' : 'supplier.create', { id: rec.id, name: rec.name });
+      m.close(); toast('Saved', 'good'); rerender();
+    });
+  };
+
+  const rerender = () => {
+    const term = ($('#spFilter', el).value || '').trim().toLowerCase();
+    let list = state.suppliers.slice().sort((a, b) => a.name.localeCompare(b.name));
+    if (term) list = list.filter(s =>
+      s.name.toLowerCase().includes(term) ||
+      (s.contact || '').toLowerCase().includes(term) ||
+      (s.email || '').toLowerCase().includes(term) ||
+      (s.tags || []).some(t => t.toLowerCase().includes(term))
+    );
+    const productCount = (id) => state.products.filter(p => p.supplierId === id).length;
+    $('tbody', el).innerHTML = list.map(s => html`
+      <tr data-id="${s.id}">
+        <td>${escapeHtml(s.name)} ${s.active === false ? '<span class="badge">inactive</span>' : ''}
+          ${(s.tags || []).map(t => `<span class="badge">${escapeHtml(t)}</span>`).join(' ')}</td>
+        <td>${escapeHtml(s.contact || '')}</td>
+        <td>${escapeHtml(s.email || '')}</td>
+        <td>${escapeHtml(s.phone || '')}</td>
+        <td>${escapeHtml(s.terms || '')}</td>
+        <td class="right"><span class="badge">${productCount(s.id)}</span></td>
+        <td class="right"><button class="btn small" data-edit>Open</button> <button class="btn small danger" data-del>Delete</button></td>
+      </tr>`).join('') || `<tr><td colspan="7"><div class="empty">No suppliers</div></td></tr>`;
+    el.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => {
+      const id = b.closest('tr').dataset.id;
+      openSupplier(state.suppliers.find(x => x.id === id));
+    }));
+    el.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => {
+      const id = b.closest('tr').dataset.id;
+      const s = state.suppliers.find(x => x.id === id);
+      const linked = state.products.filter(p => p.supplierId === id).length;
+      const msg = linked
+        ? `Delete "${s.name}"? ${linked} product${linked === 1 ? '' : 's'} will be unlinked from this supplier.`
+        : `Delete "${s.name}"?`;
+      if (!(await confirmModal(msg, { danger: true, okText: 'Delete' }))) return;
+      // unlink products
+      for (const p of state.products) {
+        if (p.supplierId === id) { p.supplierId = ''; await dbPut('products', p); }
+      }
+      await dbDel('suppliers', id);
+      state.suppliers = state.suppliers.filter(x => x.id !== id);
+      audit('supplier.delete', { id, name: s.name });
+      toast('Deleted', 'good'); rerender();
+    }));
+  };
+
+  queueMicrotask(() => {
+    $('#spFilter', el).addEventListener('input', rerender);
+    $('#spNew', el).addEventListener('click', () => openSupplier(null));
     rerender();
   });
   return el;
@@ -1292,8 +1841,11 @@ route('/reports', async () => {
       download('sales.csv', csv(rows));
     });
     $('#expProdCsv', el).addEventListener('click', () => {
-      const rows = [['Name', 'SKU', 'Barcode', 'Category', 'Price', 'Cost', 'Stock', 'Active']];
-      for (const p of state.products) rows.push([p.name, p.sku, p.barcode, state.categories.find(c => c.id === p.category)?.name || '', p.price, p.cost, p.stock, p.active !== false ? 'yes' : 'no']);
+      const rows = [['Name', 'SKU', 'Barcode', 'Category', 'Supplier', 'Price', 'Cost', 'Stock', 'Active']];
+      for (const p of state.products) rows.push([p.name, p.sku, p.barcode,
+        state.categories.find(c => c.id === p.category)?.name || '',
+        state.suppliers.find(s => s.id === p.supplierId)?.name || '',
+        p.price, p.cost, p.stock, p.active !== false ? 'yes' : 'no']);
       download('products.csv', csv(rows));
     });
   });
@@ -1416,30 +1968,83 @@ route('/settings', async () => {
           <label class="btn" style="cursor:pointer">⤒ Import backup<input id="doImport" type="file" accept="application/json" style="display:none"></label>
           <button class="btn danger" id="doReset">Reset all data</button>
         </div>
-        <div class="muted" style="margin-top:8px">Backups include products, customers, sales, users and settings. Everything lives in your browser (IndexedDB).</div>
+        <div class="muted" style="margin-top:8px">Import auto-detects both LysiPOS backups and Convex-style POS exports (product categories, suppliers, sales included). Everything lives in your browser (IndexedDB).</div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:14px"><div class="card-h"><h3>Auto-backup</h3><div class="spacer"></div><span class="pill" id="abLast">${s.lastAutoBackupAt ? 'Last: ' + fmtDate(s.lastAutoBackupAt) : 'Never run'}</span></div>
+      <div class="card-b">
+        <div class="grid cols-3">
+          <div class="field"><label>Frequency</label>
+            <select name="autoBackup">
+              <option value="off" ${s.autoBackup === 'off' ? 'selected' : ''}>Off</option>
+              <option value="daily" ${s.autoBackup === 'daily' || !s.autoBackup ? 'selected' : ''}>Daily</option>
+              <option value="weekly" ${s.autoBackup === 'weekly' ? 'selected' : ''}>Weekly</option>
+            </select>
+          </div>
+          <div class="field"><label>Keep last N backups</label><input name="autoBackupKeep" type="number" min="1" max="50" value="${s.autoBackupKeep || 10}"></div>
+          <div class="field"><label>Backup folder (Chrome/Edge)</label>
+            <button class="btn" id="pickFolder" type="button">📁 Choose folder…</button>
+          </div>
+        </div>
+        <div class="row" style="margin-top:6px">
+          <button class="btn" id="runBackupNow">▶ Run backup now</button>
+        </div>
+        <div class="muted" style="margin-top:6px">Auto-backup runs at most once per interval (checked at app start). Files land in your browser's IndexedDB — and, if you picked a folder, also on disk as <code>lysipos-backup-YYYY-MM-DD.json</code>.</div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:14px"><div class="card-h"><h3>Rolling backups</h3><div class="spacer"></div><span class="pill" id="bkCount">—</span></div>
+      <div class="card-b" style="max-height:280px;overflow:auto">
+        <table class="data" id="bkTable"><thead><tr><th>When</th><th>Reason</th><th class="right">Size</th><th></th></tr></thead><tbody></tbody></table>
       </div>
     </div>`;
+
+  const refreshBackupsTable = async () => {
+    const list = (await dbGetAll('backups')).sort((a, b) => (a.at < b.at ? 1 : -1));
+    $('#bkCount', el).textContent = `${list.length} stored`;
+    const fmtSize = (n) => n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(2) + ' MB';
+    $('#bkTable tbody', el).innerHTML = list.map(b => html`
+      <tr data-id="${b.id}">
+        <td>${fmtDate(b.at)}</td>
+        <td><span class="badge ${b.reason === 'auto' ? 'good' : ''}">${escapeHtml(b.reason || 'manual')}</span></td>
+        <td class="right mono">${fmtSize(b.size || 0)}</td>
+        <td class="right">
+          <button class="btn small" data-dl>Download</button>
+          <button class="btn small" data-restore>Restore</button>
+          <button class="btn small danger" data-del>Delete</button>
+        </td>
+      </tr>`).join('') || `<tr><td colspan="4"><div class="empty">No backups yet — auto-backup runs when you next open the app, or click "Run backup now".</div></td></tr>`;
+    el.querySelectorAll('#bkTable [data-dl]').forEach(b => b.addEventListener('click', async () => {
+      const id = b.closest('tr').dataset.id; const rec = await dbGet('backups', id); if (!rec) return;
+      const blob = new Blob([JSON.stringify(rec.data, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+      a.download = `lysipos-backup-${dayKey(rec.at)}-${rec.id.slice(2, 8)}.json`; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    }));
+    el.querySelectorAll('#bkTable [data-restore]').forEach(b => b.addEventListener('click', async () => {
+      if (!(await confirmModal('Restore this backup? Current data will be REPLACED.', { danger: true, okText: 'Restore' }))) return;
+      const id = b.closest('tr').dataset.id; const rec = await dbGet('backups', id); if (!rec) return;
+      await applyImport(rec.data); toast('Restored', 'good'); render();
+    }));
+    el.querySelectorAll('#bkTable [data-del]').forEach(b => b.addEventListener('click', async () => {
+      if (!(await confirmModal('Delete this backup?', { danger: true }))) return;
+      const id = b.closest('tr').dataset.id; await dbDel('backups', id); refreshBackupsTable();
+    }));
+  };
 
   queueMicrotask(() => {
     $('#saveSettings', el).addEventListener('click', async () => {
       const inputs = el.querySelectorAll('[name]');
       for (const i of inputs) {
         const key = i.name; let v = i.value;
-        if (['taxRate', 'loyaltyPerCurrency', 'loyaltyRedeemValue'].includes(key)) v = Number(v) || 0;
+        if (['taxRate', 'loyaltyPerCurrency', 'loyaltyRedeemValue', 'autoBackupKeep'].includes(key)) v = Number(v) || 0;
         if (key === 'taxInclusive') v = v === '1';
         state.settings[key] = v;
       }
       await saveSettings(); toast('Settings saved', 'good');
-      // re-render shell to refresh business name
       render();
     });
     $('#doExport', el).addEventListener('click', async () => {
-      const dump = {
-        exportedAt: nowISO(),
-        settings: state.settings,
-        users: state.users, products: state.products, categories: state.categories,
-        customers: state.customers, sales: state.sales
-      };
+      const dump = snapshotData();
       const blob = new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' });
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
       a.download = `lysipos-backup-${dayKey()}.json`; a.click();
@@ -1450,12 +2055,13 @@ route('/settings', async () => {
       if (!(await confirmModal('Importing will REPLACE current data. Continue?', { danger: true, okText: 'Import' }))) { e.target.value = ''; return; }
       const text = await file.text(); let data;
       try { data = JSON.parse(text); } catch { return toast('Invalid file', 'bad'); }
-      for (const store of ['products', 'categories', 'customers', 'sales', 'users']) {
-        await dbClear(store);
-        for (const row of (data[store] || [])) await dbPut(store, row);
+      try {
+        const norm = await applyImport(data);
+        toast(`Imported: ${(norm.products || []).length} products · ${(norm.sales || []).length} sales · ${(norm.categories || []).length} categories · ${(norm.suppliers || []).length} suppliers`, 'good');
+        render();
+      } catch (err) {
+        console.error(err); toast('Import failed: ' + err.message, 'bad');
       }
-      if (data.settings) await dbPut('settings', data.settings);
-      await loadAll(); audit('data.import'); toast('Imported', 'good'); render();
     });
     $('#doReset', el).addEventListener('click', async () => {
       if (!(await confirmModal('Erase ALL data and reseed? You will be logged out.', { danger: true, okText: 'Erase' }))) return;
@@ -1463,6 +2069,18 @@ route('/settings', async () => {
       _db = null; await seedIfEmpty(); await loadAll(); sessionStorage.clear();
       state.user = null; toast('Reset complete', 'good'); render();
     });
+    $('#pickFolder', el).addEventListener('click', pickBackupFolder);
+    $('#runBackupNow', el).addEventListener('click', async () => {
+      const rec = await saveRollingBackup('manual');
+      state.settings.lastAutoBackupAt = nowISO(); await saveSettings();
+      const handle = await getBackupFolder();
+      if (handle) {
+        try { const name = await writeBackupToFolder(handle, JSON.stringify(rec.data, null, 2)); toast('Backup saved: ' + name, 'good'); }
+        catch (e) { toast('In-app backup saved, folder write failed', 'warn'); }
+      } else { toast('Backup saved (in-app)', 'good'); }
+      refreshBackupsTable();
+    });
+    refreshBackupsTable();
   });
   return el;
 });
@@ -1480,4 +2098,8 @@ window.addEventListener('beforeinstallprompt', (e) => {
   await loadAll();
   await restoreSession();
   render();
+  // Fire auto-backup after the UI is up
+  setTimeout(() => { maybeAutoBackup().catch(console.error); }, 1500);
+  // And every 6 hours in case the app stays open
+  setInterval(() => { maybeAutoBackup().catch(console.error); }, 6 * 3600 * 1000);
 })();

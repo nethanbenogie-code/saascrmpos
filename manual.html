@@ -76,15 +76,17 @@
     <a href="#pos">5. Selling — the POS</a>
     <a href="#catalog">6. Products &amp; categories</a>
     <a href="#inventory">7. Inventory</a>
-    <a href="#crm">8. Customers (CRM)</a>
-    <a href="#sales">9. Sales history &amp; refunds</a>
-    <a href="#reports">10. Reports &amp; exports</a>
-    <a href="#users">11. Users &amp; roles</a>
-    <a href="#settings">12. Settings, tax &amp; currency</a>
-    <a href="#backup">13. Backup, restore &amp; reset</a>
-    <a href="#offline">14. Offline &amp; data safety</a>
-    <a href="#shortcuts">15. Keyboard &amp; barcode tips</a>
-    <a href="#faq">16. FAQ &amp; troubleshooting</a>
+    <a href="#suppliers">8. Suppliers</a>
+    <a href="#labels">9. Barcodes, QR &amp; labels</a>
+    <a href="#crm">10. Customers (CRM)</a>
+    <a href="#sales">11. Sales history &amp; refunds</a>
+    <a href="#reports">12. Reports &amp; exports</a>
+    <a href="#users">13. Users &amp; roles</a>
+    <a href="#settings">14. Settings, tax &amp; currency</a>
+    <a href="#backup">15. Backup, restore &amp; reset</a>
+    <a href="#offline">16. Offline &amp; data safety</a>
+    <a href="#shortcuts">17. Keyboard &amp; barcode tips</a>
+    <a href="#faq">18. FAQ &amp; troubleshooting</a>
   </nav>
 
   <main>
@@ -185,7 +187,48 @@
     <p>Open <strong>Inventory</strong> to adjust stock. Type a positive number to add units, or negative to remove them, then <strong>Apply</strong>. The <strong>Bulk restock (+10 all)</strong> button is handy for demos.</p>
     <p>Sales automatically decrement stock. Refunds (see §9) automatically restore it.</p>
 
-    <h2 id="crm">8. Customers (CRM)</h2>
+    <h2 id="suppliers">8. Suppliers</h2>
+    <p>Open <strong>Suppliers</strong> to manage the vendors you buy inventory from.</p>
+    <ul>
+      <li><strong>+ New supplier</strong>: name, contact person, email, phone, payment terms (e.g. <em>Net 30</em>, <em>COD</em>, <em>Prepaid</em>), address, tags, and notes.</li>
+      <li><strong>Open</strong> a supplier to view all linked products (with SKU, cost and current stock) and edit their details.</li>
+      <li>Search by name, contact, email or tag. The <em>Products</em> column shows how many items each supplier sources.</li>
+    </ul>
+    <h3>Linking products to a supplier</h3>
+    <p>Every product now has a <em>Supplier</em> dropdown in its edit form (<em>Products → Edit</em>). Assign a supplier to answer questions like "who do we reorder this from?" and "which vendor supplies most of our stock?" Deleting a supplier automatically clears the link on any product that used it — the products stay, they just lose the supplier assignment.</p>
+    <div class="note">Suppliers are included in JSON backups and the Products CSV export (as an extra <em>Supplier</em> column).</div>
+
+    <h2 id="labels">9. Barcodes, QR &amp; labels</h2>
+    <p>LysiPOS ships with three built-in ways to work with codes — no external libraries, everything runs offline.</p>
+
+    <h3>Generate a barcode or QR for a product</h3>
+    <ol>
+      <li>Open <em>Products → Edit</em> on any item.</li>
+      <li>The <strong>Label preview</strong> card renders a live <strong>Code128 barcode</strong> of the Barcode field (falling back to the SKU when Barcode is empty).</li>
+      <li>Click <strong>▦ Show QR</strong> to switch to a QR code that encodes JSON with name, SKU, barcode and price — any consumer QR reader will show the details.</li>
+      <li>Click <strong>⤓ Download SVG</strong> to save the current preview as a vector file you can drop into your label designer.</li>
+      <li>The <strong>= SKU</strong> button copies the SKU into the Barcode field; the <strong>📷</strong> button opens the camera scanner to fill Barcode from a scan.</li>
+    </ol>
+
+    <h3>Print a sheet of labels</h3>
+    <p>Open <strong>Labels</strong> from the sidebar.</p>
+    <ol>
+      <li>Filter and check the products you want, and set a quantity per product.</li>
+      <li>Pick <em>Type</em> (Barcode or QR) and <em>Columns</em> (2–5 per row).</li>
+      <li>The preview builds a printable sheet with product name, code, and price on each label.</li>
+      <li>Click <strong>🖨 Print</strong> — the toolbar, sidebar and top bar are hidden by print CSS so only the sheet prints.</li>
+    </ol>
+
+    <h3>Scanning barcodes and QR with the camera</h3>
+    <p>The <strong>📷 Scan</strong> button on the POS opens the camera scanner using your browser's native <code>BarcodeDetector</code>:</p>
+    <ul>
+      <li>Supported on Chrome / Edge on Android, and Safari on iOS 17+. On unsupported browsers the button warns and you can continue using a USB / Bluetooth keyboard-wedge scanner into the search box.</li>
+      <li>The first detected code (EAN-13, EAN-8, Code128, Code39, UPC-A/E, QR, ITF, Codabar) auto-matches to a product by <em>Barcode</em> or <em>SKU</em>; if there's no match, the scanned value drops into the search box so you can review.</li>
+      <li>The <strong>🔄</strong> button flips between front and back camera. Grant camera permission the first time; iOS also requires you to be on <code>https://</code> or <code>http://localhost</code>.</li>
+    </ul>
+    <div class="note">The QR generator supports up to about 213 characters (version 10 at error-correction level M). Enough for URLs, product JSON, and long SKUs. If you feed it more it will refuse rather than truncate.</div>
+
+    <h2 id="crm">10. Customers (CRM)</h2>
     <p>Open <strong>Customers</strong> to manage your CRM.</p>
     <ul>
       <li><strong>+ New customer</strong>: name, email, phone, address, tags (comma-separated), notes.</li>
@@ -195,14 +238,14 @@
     <h3>Loyalty points</h3>
     <p>Every attached sale earns points according to <em>Settings → Money → Loyalty pts per {currency}</em>. Set <em>1 pt worth</em> if you plan to redeem points as store credit in the future.</p>
 
-    <h2 id="sales">9. Sales history &amp; refunds</h2>
+    <h2 id="sales">11. Sales history &amp; refunds</h2>
     <p>Open <strong>Sales</strong> to see every completed sale, filter by date range or receipt number, and see the running total for the current filter.</p>
     <ul>
       <li>Click <strong>View</strong> on any row to open the receipt.</li>
       <li>From the receipt dialog, <strong>Print</strong> re-prints it or <strong>Refund</strong> reverses the sale — the sale is marked refunded and stock is restored.</li>
     </ul>
 
-    <h2 id="reports">10. Reports &amp; exports</h2>
+    <h2 id="reports">12. Reports &amp; exports</h2>
     <p>Open <strong>Reports</strong> for a rolling 30-day view: revenue, items, average ticket, a daily bar chart, and breakdowns by category and cashier.</p>
     <p>Under <em>Export</em>:</p>
     <ul>
@@ -211,7 +254,7 @@
     </ul>
     <p>Both files open in Excel, Numbers, or Google Sheets.</p>
 
-    <h2 id="users">11. Users &amp; roles <span class="tag">(Admin)</span></h2>
+    <h2 id="users">13. Users &amp; roles <span class="tag">(Admin)</span></h2>
     <p>Open <strong>Users</strong>. Add teammates and assign one of three roles:</p>
     <table>
       <tr><th>Role</th><th>Can do</th></tr>
@@ -221,7 +264,7 @@
     </table>
     <p>Editing a user with the password field blank keeps the existing password. Deactivate a user by setting <em>Active: No</em> instead of deleting them — this preserves their name on past receipts.</p>
 
-    <h2 id="settings">12. Settings, tax &amp; currency</h2>
+    <h2 id="settings">14. Settings, tax &amp; currency</h2>
     <p>Open <strong>Settings</strong>. Fields:</p>
     <ul>
       <li><strong>Business</strong>: name, address, phone, email, receipt footer.</li>
@@ -232,16 +275,27 @@
     </ul>
     <p>Click <strong>Save settings</strong> — the sidebar and receipt update immediately.</p>
 
-    <h2 id="backup">13. Backup, restore &amp; reset</h2>
+    <h2 id="backup">15. Backup, restore &amp; reset</h2>
     <p>Under <em>Settings → Data</em>:</p>
     <ul>
-      <li><strong>Export backup (JSON)</strong> saves a single file containing all products, categories, customers, sales, users and settings. Keep this file somewhere safe (cloud drive, USB stick).</li>
-      <li><strong>Import backup</strong> replaces the current data with the contents of a chosen JSON backup. Always export first before importing.</li>
-      <li><strong>Reset all data</strong> wipes everything and re-seeds the demo store. Use it before handing the app to a real customer — or if you want to start over cleanly.</li>
+      <li><strong>Export backup (JSON)</strong> saves a single file containing all products, categories, suppliers, customers, sales, users, expenses and settings. Keep this file somewhere safe (cloud drive, USB stick).</li>
+      <li><strong>Import backup</strong> replaces the current data with the contents of a chosen JSON backup. The importer <strong>auto-detects</strong> two formats: LysiPOS's own backups, and Convex-style exports from other POS systems (fields like <code>_id</code>, <code>_creationTime</code>, and a separate <code>saleItems</code> array are converted automatically — product categories and suppliers come across intact).</li>
+      <li><strong>Reset all data</strong> wipes everything and re-seeds the demo store.</li>
     </ul>
-    <div class="bad"><strong>Warning:</strong> Import and Reset are destructive. There is no undo.</div>
+    <div class="bad"><strong>Warning:</strong> Import and Reset are destructive. Export first.</div>
 
-    <h2 id="offline">14. Offline &amp; data safety</h2>
+    <h3>Auto-backup</h3>
+    <p>Under <em>Settings → Auto-backup</em>:</p>
+    <ul>
+      <li><strong>Frequency</strong>: <em>Off</em>, <em>Daily</em>, or <em>Weekly</em>. The app checks at start-up (and every 6 hours it's kept open) and only runs one backup per interval.</li>
+      <li><strong>Keep last N backups</strong>: rolling window inside the app; older ones are pruned automatically.</li>
+      <li><strong>Backup folder (Chrome/Edge)</strong>: click <em>Choose folder…</em> once and grant read/write. Each auto-backup will then also be written to disk as <code>lysipos-backup-YYYY-MM-DD.json</code> in that folder — no download prompt. Other browsers fall back to in-app backups only.</li>
+      <li><strong>Run backup now</strong>: manual trigger.</li>
+    </ul>
+    <p>Under <em>Rolling backups</em> you'll see every stored snapshot with buttons to <em>Download</em>, <em>Restore</em>, or <em>Delete</em> individually.</p>
+    <div class="note">Because folder permission is per-session, Chrome may re-prompt for access the first time an auto-backup fires after each app relaunch — a one-click confirmation.</div>
+
+    <h2 id="offline">16. Offline &amp; data safety</h2>
     <p>LysiPOS is <strong>offline-first</strong>. Once installed, the app shell (HTML/CSS/JS/icons) is cached by the service worker and all data lives in your browser's IndexedDB. You can sell, add customers, and adjust inventory with no internet connection.</p>
     <p>The online/offline pill in the top bar reflects the browser's connection state.</p>
     <div class="warn">
@@ -253,7 +307,7 @@
       </ul>
     </div>
 
-    <h2 id="shortcuts">15. Keyboard &amp; barcode tips</h2>
+    <h2 id="shortcuts">17. Keyboard &amp; barcode tips</h2>
     <ul>
       <li>On the POS screen, focus the search box and <em>type or scan</em> a barcode → <kbd>Enter</kbd> adds the matching product.</li>
       <li>In cart quantity boxes, type a number and press <kbd>Tab</kbd> to commit.</li>
@@ -261,7 +315,7 @@
       <li>The sidebar has a theme toggle (🌓) for switching between dark and light.</li>
     </ul>
 
-    <h2 id="faq">16. FAQ &amp; troubleshooting</h2>
+    <h2 id="faq">18. FAQ &amp; troubleshooting</h2>
     <h3>The Install button never appears</h3>
     <p>Chrome-family browsers only show the install prompt on secure origins (<code>https://</code> or <code>http://localhost</code>) and after the service worker has registered. Serve the folder with a local HTTP server (e.g. <code>python -m http.server 8080</code>) and reload once.</p>
 

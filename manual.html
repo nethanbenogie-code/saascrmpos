@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LysiPOS — User Manual</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg: #0b1220; --panel: #0f172a; --panel-2: #172247;
+    --border: #1f2a44; --text: #e6edf7; --muted: #94a3b8;
+    --accent: #22d3ee; --accent-2: #4f46e5;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f5f7fb; --panel:#fff; --panel-2:#eef2ff; --border:#e5e7eb; --text:#0f172a; --muted:#475569; color-scheme:light; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: var(--text);
+    background:
+      radial-gradient(1000px 500px at 100% -10%, rgba(79,70,229,.18), transparent 60%),
+      radial-gradient(700px 500px at -10% 110%, rgba(34,211,238,.12), transparent 60%),
+      var(--bg);
+  }
+  .wrap { display: grid; grid-template-columns: 260px 1fr; max-width: 1200px; margin: 0 auto; gap: 24px; padding: 24px; }
+  .toc { position: sticky; top: 20px; align-self: start; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px; }
+  .toc h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
+  .toc a { display: block; padding: 6px 8px; border-radius: 8px; color: var(--text); text-decoration: none; font-size: 14px; }
+  .toc a:hover { background: var(--panel-2); }
+  main { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 28px; }
+  h1 { margin-top: 0; font-size: 30px; }
+  h2 { margin-top: 32px; padding-top: 12px; border-top: 1px dashed var(--border); font-size: 22px; }
+  h3 { margin-top: 22px; font-size: 16px; color: var(--accent); }
+  p { color: var(--text); }
+  code, kbd { background: var(--panel-2); padding: 1px 6px; border-radius: 6px; font-family: ui-monospace, Menlo, monospace; font-size: 90%; }
+  kbd { border: 1px solid var(--border); }
+  ol li, ul li { margin: 6px 0; }
+  .note { background: rgba(34,211,238,.08); border: 1px solid rgba(34,211,238,.35); padding: 10px 14px; border-radius: 10px; margin: 12px 0; }
+  .warn { background: rgba(245,158,11,.08); border: 1px solid rgba(245,158,11,.35); padding: 10px 14px; border-radius: 10px; margin: 12px 0; }
+  .bad  { background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.35); padding: 10px 14px; border-radius: 10px; margin: 12px 0; }
+  .btn { display: inline-block; padding: 8px 12px; border-radius: 10px; background: linear-gradient(180deg, var(--accent), var(--accent-2)); color: #fff; text-decoration: none; font-weight: 600; }
+  header.top { display: flex; align-items: center; gap: 12px; padding: 12px 24px; border-bottom: 1px solid var(--border); }
+  .mark { width: 32px; height: 32px; border-radius: 9px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
+  .brand { font-weight: 800; letter-spacing: .3px; }
+  .tag { color: var(--muted); font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 16px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { background: var(--panel-2); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  @media (max-width: 800px) {
+    .wrap { grid-template-columns: 1fr; }
+    .toc { position: static; }
+  }
+  @media print { .toc, header.top { display: none; } main { border: 0; padding: 0; } body { background: #fff; color: #000; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="mark"></div>
+  <div>
+    <div class="brand">LysiPOS User Manual</div>
+    <div class="tag">SaaS · CRM · POS — installable PWA</div>
+  </div>
+  <div style="flex:1"></div>
+  <a class="btn" href="index.html">Open the app →</a>
+</header>
+
+<div class="wrap">
+  <nav class="toc">
+    <h3>Contents</h3>
+    <a href="#intro">1. Introduction</a>
+    <a href="#install">2. Install as an app (PWA)</a>
+    <a href="#signin">3. First sign-in</a>
+    <a href="#tour">4. Interface tour</a>
+    <a href="#pos">5. Selling — the POS</a>
+    <a href="#catalog">6. Products &amp; categories</a>
+    <a href="#inventory">7. Inventory</a>
+    <a href="#crm">8. Customers (CRM)</a>
+    <a href="#sales">9. Sales history &amp; refunds</a>
+    <a href="#reports">10. Reports &amp; exports</a>
+    <a href="#users">11. Users &amp; roles</a>
+    <a href="#settings">12. Settings, tax &amp; currency</a>
+    <a href="#backup">13. Backup, restore &amp; reset</a>
+    <a href="#offline">14. Offline &amp; data safety</a>
+    <a href="#shortcuts">15. Keyboard &amp; barcode tips</a>
+    <a href="#faq">16. FAQ &amp; troubleshooting</a>
+  </nav>
+
+  <main>
+    <h1 id="intro">1. Introduction</h1>
+    <p>
+      <strong>LysiPOS</strong> is a single, installable web app that combines three things a small business
+      usually pays for separately: a <strong>Point of Sale</strong> (ring sales, print receipts), a
+      <strong>Customer Relationship Manager</strong> (track buyers, tags, notes, loyalty points), and light
+      <strong>SaaS-style business admin</strong> (users &amp; roles, settings, reports, backups).
+    </p>
+    <p>
+      Everything runs in your browser. There is no server to configure — your catalog, customers, and sales are
+      stored locally in IndexedDB, and the app installs as a PWA so it opens like a native app and works offline.
+    </p>
+    <div class="note">
+      <strong>Who should use this manual?</strong> Store owners, managers and cashiers. Sections marked
+      <em>Admin</em> are only visible to users with the <code>admin</code> role.
+    </div>
+
+    <h2 id="install">2. Install as an app (PWA)</h2>
+    <p>
+      LysiPOS is a Progressive Web App — you can install it to your desktop, iPad, or Android phone and it will
+      behave like a native app (own icon, no browser tabs, offline support).
+    </p>
+    <h3>Desktop (Chrome, Edge, Brave, Arc)</h3>
+    <ol>
+      <li>Open <code>index.html</code> served over <code>http://localhost</code> or <code>https://</code>. (Opening it from a plain <code>file://</code> path will work, but PWA install and the service worker require a real HTTP origin.)</li>
+      <li>Look for the <strong>Install</strong> icon in the address bar, or click the <strong>⤓ Install App</strong> button in the sidebar.</li>
+      <li>Confirm — LysiPOS now appears in your Start menu / Dock.</li>
+    </ol>
+    <h3>iPhone / iPad (Safari)</h3>
+    <ol>
+      <li>Open the URL in Safari.</li>
+      <li>Tap <strong>Share</strong> → <strong>Add to Home Screen</strong>.</li>
+      <li>Launch it from the home screen — the URL bar disappears and it runs full-screen.</li>
+    </ol>
+    <h3>Android (Chrome)</h3>
+    <ol>
+      <li>Open the URL, then tap the <strong>⋮</strong> menu.</li>
+      <li>Choose <strong>Install app</strong> or <strong>Add to Home screen</strong>.</li>
+    </ol>
+    <div class="warn"><strong>Local demo tip:</strong> to run over HTTP, use any static server. For example, from the project folder run <code>python -m http.server 8080</code> and open <code>http://localhost:8080</code>.</div>
+
+    <h2 id="signin">3. First sign-in</h2>
+    <p>The first time LysiPOS boots it seeds a demo store, a sample catalog, a few customers, and one admin account:</p>
+    <table>
+      <tr><th>Field</th><th>Value</th></tr>
+      <tr><td>Email</td><td><code>admin@lysipos.local</code></td></tr>
+      <tr><td>Password</td><td><code>admin123</code></td></tr>
+    </table>
+    <div class="bad"><strong>Change this immediately.</strong> Go to <em>Users → Edit → set new password</em>. Anyone with access to the same browser profile can sign in with the default.</div>
+
+    <h2 id="tour">4. Interface tour</h2>
+    <p>The app has three regions:</p>
+    <ul>
+      <li><strong>Sidebar</strong> (left): navigation, theme toggle, install button, and a link to this manual.</li>
+      <li><strong>Top bar</strong>: business name badge, online/offline pill, current user, and logout.</li>
+      <li><strong>Main area</strong>: the current page.</li>
+    </ul>
+    <p>On small screens the sidebar hides behind a <kbd>☰</kbd> button in the top bar.</p>
+
+    <h2 id="pos">5. Selling — the POS</h2>
+    <p>Open <strong>Point of Sale</strong> from the sidebar. The screen has two halves:</p>
+    <ul>
+      <li><strong>Left — catalog</strong>: a grid of product tiles with a search box and a category filter.</li>
+      <li><strong>Right — cart</strong>: current sale, running total, and the <strong>Charge</strong> button.</li>
+    </ul>
+
+    <h3>Ringing a sale</h3>
+    <ol>
+      <li>Type in the search box or click a product tile to add it. Out-of-stock items are dimmed and can't be added.</li>
+      <li>In the cart, use <kbd>−</kbd> / <kbd>+</kbd> or type a quantity directly.</li>
+      <li>Optionally click <strong>Customer</strong> to attach a customer to the sale (needed for loyalty points).</li>
+      <li>Click <strong>Charge</strong>. The <em>Checkout</em> dialog opens.</li>
+      <li>Pick a payment method (Cash / Card / Wallet), enter the amount tendered, adjust the discount if any, then <strong>Charge</strong>.</li>
+      <li>A receipt appears — click <strong>Print receipt</strong> to send it to your printer, or close to go back.</li>
+    </ol>
+
+    <h3>Barcode scanning</h3>
+    <p>The search box is focused by default. Most USB / Bluetooth barcode scanners act as a keyboard: they type the code and press <kbd>Enter</kbd>. If a product matches the scanned code exactly (by <code>barcode</code> or <code>sku</code>) it is added to the cart automatically.</p>
+
+    <h3>Holding a sale</h3>
+    <p>Click <strong>Hold</strong> to save the current cart aside — useful when a customer runs to grab one more thing. Next time you open the POS screen the held cart is restored.</p>
+
+    <h3>Discounts and tax</h3>
+    <p>Discounts are entered as an absolute amount (in your currency) in the checkout dialog. Tax is calculated using the rate set in <em>Settings → Money</em>. Items marked non-taxable are excluded from the taxable subtotal.</p>
+
+    <h2 id="catalog">6. Products &amp; categories</h2>
+    <p>Open <strong>Products</strong> to manage your catalog.</p>
+    <ul>
+      <li>Click <strong>+ New product</strong> to add. Fields: name, SKU, barcode, category, price, cost, stock, taxable, active.</li>
+      <li><strong>Edit</strong> reopens the same form. <strong>Delete</strong> removes the product (past sales keep their line items but link to a missing product).</li>
+      <li><strong>Categories</strong> opens a simple manager where you can add or remove categories.</li>
+    </ul>
+    <div class="note">Set <em>Active: No</em> to hide a seasonal product from the POS without deleting it.</div>
+
+    <h2 id="inventory">7. Inventory</h2>
+    <p>Open <strong>Inventory</strong> to adjust stock. Type a positive number to add units, or negative to remove them, then <strong>Apply</strong>. The <strong>Bulk restock (+10 all)</strong> button is handy for demos.</p>
+    <p>Sales automatically decrement stock. Refunds (see §9) automatically restore it.</p>
+
+    <h2 id="crm">8. Customers (CRM)</h2>
+    <p>Open <strong>Customers</strong> to manage your CRM.</p>
+    <ul>
+      <li><strong>+ New customer</strong>: name, email, phone, address, tags (comma-separated), notes.</li>
+      <li><strong>Open</strong> a customer to see lifetime spend, order count, points, and the interaction log.</li>
+      <li>Use <em>Add interaction note</em> to log phone calls, complaints, or anything else worth remembering. Purchases are logged automatically when a sale is attached to the customer at checkout.</li>
+    </ul>
+    <h3>Loyalty points</h3>
+    <p>Every attached sale earns points according to <em>Settings → Money → Loyalty pts per {currency}</em>. Set <em>1 pt worth</em> if you plan to redeem points as store credit in the future.</p>
+
+    <h2 id="sales">9. Sales history &amp; refunds</h2>
+    <p>Open <strong>Sales</strong> to see every completed sale, filter by date range or receipt number, and see the running total for the current filter.</p>
+    <ul>
+      <li>Click <strong>View</strong> on any row to open the receipt.</li>
+      <li>From the receipt dialog, <strong>Print</strong> re-prints it or <strong>Refund</strong> reverses the sale — the sale is marked refunded and stock is restored.</li>
+    </ul>
+
+    <h2 id="reports">10. Reports &amp; exports</h2>
+    <p>Open <strong>Reports</strong> for a rolling 30-day view: revenue, items, average ticket, a daily bar chart, and breakdowns by category and cashier.</p>
+    <p>Under <em>Export</em>:</p>
+    <ul>
+      <li><strong>Sales CSV</strong> — one row per sale, with subtotal, discount, tax, total, method, and refund status.</li>
+      <li><strong>Products CSV</strong> — your full catalog.</li>
+    </ul>
+    <p>Both files open in Excel, Numbers, or Google Sheets.</p>
+
+    <h2 id="users">11. Users &amp; roles <span class="tag">(Admin)</span></h2>
+    <p>Open <strong>Users</strong>. Add teammates and assign one of three roles:</p>
+    <table>
+      <tr><th>Role</th><th>Can do</th></tr>
+      <tr><td><code>admin</code></td><td>Everything, including user management and resetting data.</td></tr>
+      <tr><td><code>manager</code></td><td>Everything except managing users.</td></tr>
+      <tr><td><code>cashier</code></td><td>Ring sales, look up products and customers, refund from history (if permitted by store policy).</td></tr>
+    </table>
+    <p>Editing a user with the password field blank keeps the existing password. Deactivate a user by setting <em>Active: No</em> instead of deleting them — this preserves their name on past receipts.</p>
+
+    <h2 id="settings">12. Settings, tax &amp; currency</h2>
+    <p>Open <strong>Settings</strong>. Fields:</p>
+    <ul>
+      <li><strong>Business</strong>: name, address, phone, email, receipt footer.</li>
+      <li><strong>Currency</strong>: any ISO-4217 code (<code>USD</code>, <code>EUR</code>, <code>GBP</code>, <code>NGN</code>, <code>ZAR</code>, <code>INR</code>, …). Formatting follows the browser locale.</li>
+      <li><strong>Tax rate</strong>: percentage. Set <em>Tax included in price</em> to <em>Yes</em> if your displayed prices already include tax (common outside the US) — the app will extract the tax from the price instead of adding it on top.</li>
+      <li><strong>Loyalty</strong>: points per unit currency spent, and the value of one point.</li>
+      <li><strong>Theme</strong>: Dark or Light.</li>
+    </ul>
+    <p>Click <strong>Save settings</strong> — the sidebar and receipt update immediately.</p>
+
+    <h2 id="backup">13. Backup, restore &amp; reset</h2>
+    <p>Under <em>Settings → Data</em>:</p>
+    <ul>
+      <li><strong>Export backup (JSON)</strong> saves a single file containing all products, categories, customers, sales, users and settings. Keep this file somewhere safe (cloud drive, USB stick).</li>
+      <li><strong>Import backup</strong> replaces the current data with the contents of a chosen JSON backup. Always export first before importing.</li>
+      <li><strong>Reset all data</strong> wipes everything and re-seeds the demo store. Use it before handing the app to a real customer — or if you want to start over cleanly.</li>
+    </ul>
+    <div class="bad"><strong>Warning:</strong> Import and Reset are destructive. There is no undo.</div>
+
+    <h2 id="offline">14. Offline &amp; data safety</h2>
+    <p>LysiPOS is <strong>offline-first</strong>. Once installed, the app shell (HTML/CSS/JS/icons) is cached by the service worker and all data lives in your browser's IndexedDB. You can sell, add customers, and adjust inventory with no internet connection.</p>
+    <p>The online/offline pill in the top bar reflects the browser's connection state.</p>
+    <div class="warn">
+      <strong>Because data is browser-local:</strong>
+      <ul>
+        <li>Clearing site data (via browser settings) will erase your LysiPOS data — <strong>always export a backup first</strong>.</li>
+        <li>Different browsers (or different browser profiles) hold separate LysiPOS databases.</li>
+        <li>Incognito / private windows won't persist data between sessions.</li>
+      </ul>
+    </div>
+
+    <h2 id="shortcuts">15. Keyboard &amp; barcode tips</h2>
+    <ul>
+      <li>On the POS screen, focus the search box and <em>type or scan</em> a barcode → <kbd>Enter</kbd> adds the matching product.</li>
+      <li>In cart quantity boxes, type a number and press <kbd>Tab</kbd> to commit.</li>
+      <li>Use <kbd>Ctrl</kbd> / <kbd>Cmd</kbd> + <kbd>P</kbd> from the receipt dialog to print, or click <strong>Print receipt</strong>.</li>
+      <li>The sidebar has a theme toggle (🌓) for switching between dark and light.</li>
+    </ul>
+
+    <h2 id="faq">16. FAQ &amp; troubleshooting</h2>
+    <h3>The Install button never appears</h3>
+    <p>Chrome-family browsers only show the install prompt on secure origins (<code>https://</code> or <code>http://localhost</code>) and after the service worker has registered. Serve the folder with a local HTTP server (e.g. <code>python -m http.server 8080</code>) and reload once.</p>
+
+    <h3>I opened the file and it looks unstyled</h3>
+    <p>You probably double-clicked <code>index.html</code>. Some browsers block ES modules from <code>file://</code>. Serve the folder over HTTP as above.</p>
+
+    <h3>The receipt is huge on paper</h3>
+    <p>Use your browser's print dialog to switch to a thermal printer / narrow paper size. The receipt is 80&thinsp;mm-friendly and the rest of the UI is hidden in print CSS.</p>
+
+    <h3>Tax numbers look off</h3>
+    <p>Check <em>Settings → Tax included in price</em>. When your catalog prices already contain tax, this must be <em>Yes</em>, otherwise tax will be double-counted.</p>
+
+    <h3>I forgot the admin password</h3>
+    <p>Sign in as another admin and change it in <em>Users</em>. If no admin can sign in, open your browser's DevTools → Application → IndexedDB → <code>lysipos</code> → <code>users</code>, delete the admin user, then reload — the app will re-seed the default <code>admin@lysipos.local</code> / <code>admin123</code>.</p>
+
+    <h3>Can multiple devices share data?</h3>
+    <p>Not out of the box — data is local to each browser. Use <em>Export</em> / <em>Import</em> to move data between devices. Adding real multi-device sync would require a small backend (out of scope for this offline PWA).</p>
+
+    <h3>Where do I file feedback or bugs?</h3>
+    <p>Since this is a self-hosted static app, feedback goes wherever your team gathers it — a shared doc, an internal tracker, or straight into <code>app.js</code>. The codebase is intentionally small and readable.</p>
+
+    <p style="margin-top:36px" class="tag">© LysiPOS. This manual is bundled with the app and works offline once installed.</p>
+  </main>
+</div>
+</body>
+</html>

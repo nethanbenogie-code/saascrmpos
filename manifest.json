@@ -1,0 +1,21 @@
+{
+  "name": "LysiPOS — SaaS · CRM · POS",
+  "short_name": "LysiPOS",
+  "description": "Offline-first Point-of-Sale, CRM and business SaaS in one installable app. Built by Gieo Software.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0b1220",
+  "theme_color": "#0f172a",
+  "categories": ["business", "productivity", "finance"],
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "New Sale", "short_name": "Sale", "url": "./index.html#/pos", "description": "Open the POS to ring a sale" },
+    { "name": "Customers", "short_name": "CRM", "url": "./index.html#/customers" },
+    { "name": "Dashboard", "short_name": "Home", "url": "./index.html#/dashboard" }
+  ]
+}

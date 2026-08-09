@@ -86,7 +86,8 @@
     <a href="#backup">15. Backup, restore &amp; reset</a>
     <a href="#offline">16. Offline &amp; data safety</a>
     <a href="#shortcuts">17. Keyboard &amp; barcode tips</a>
-    <a href="#faq">18. FAQ &amp; troubleshooting</a>
+    <a href="#dev">18. Dev Console (admin)</a>
+    <a href="#faq">19. FAQ &amp; troubleshooting</a>
   </nav>
 
   <main>
@@ -315,7 +316,40 @@
       <li>The sidebar has a theme toggle (🌓) for switching between dark and light.</li>
     </ul>
 
-    <h2 id="faq">18. FAQ &amp; troubleshooting</h2>
+    <h2 id="dev">18. Dev Console <span class="tag">(Admin)</span></h2>
+    <p>Open <strong>🛠️ Dev Console</strong> from the sidebar. It's the one-stop page for troubleshooting and quick maintenance without leaving the app.</p>
+
+    <h3>Session &amp; storage</h3>
+    <ul>
+      <li><strong>Session</strong> — current user, app/DB version, user-agent, online status, PWA display mode, camera-scanner support, File System Access support, active service workers, and browser storage estimate.</li>
+      <li><strong>Storage</strong> — row counts and estimated size per IndexedDB store, with a per-store <em>Clear</em> button (the <code>settings</code> store is protected).</li>
+    </ul>
+
+    <h3>Users — quick actions</h3>
+    <p>A compact table of every user with, per row:</p>
+    <ul>
+      <li><strong>Change password</strong> — set any user's password. Requires 4+ chars and a confirmation. Stored SHA-256 hashed; no plaintext is kept.</li>
+      <li><strong>Disable / Enable</strong> — toggle without deleting.</li>
+      <li><strong>Change role</strong> — flip between admin / manager / cashier.</li>
+      <li><strong>Delete</strong> — removes the user (you can't delete yourself).</li>
+      <li><strong>+ Ensure default admin</strong> — re-adds <code>admin@lysipos.local</code> / <code>admin123</code> if no working admin exists.</li>
+    </ul>
+
+    <h3>Audit log</h3>
+    <p>Last 100 recorded actions (logins, sales, imports, password changes, etc.). Download the full log as CSV, or clear it entirely.</p>
+
+    <h3>Console output</h3>
+    <p>The app captures <code>console.log/info/warn/error</code> and unhandled errors from the moment the page loaded — helpful when you need to diagnose an issue without opening DevTools. Filter by level or clear as needed. The ring keeps the last 400 entries.</p>
+
+    <h3>Danger zone</h3>
+    <ul>
+      <li><strong>Unregister service worker</strong> — forces the next reload to fetch fresh app code. Use when a hard-refresh isn't picking up an update.</li>
+      <li><strong>Delete IndexedDB &amp; reload</strong> — wipes the entire database file and reloads. Cleaner than "Reset all data" if the DB itself seems corrupt.</li>
+      <li><strong>Reset all data &amp; reseed</strong> — clears every store and re-seeds the demo store.</li>
+    </ul>
+    <div class="bad"><strong>All three are destructive.</strong> Export a backup from <em>Settings → Data</em> first if you might want the data back.</div>
+
+    <h2 id="faq">19. FAQ &amp; troubleshooting</h2>
     <h3>The Install button never appears</h3>
     <p>Chrome-family browsers only show the install prompt on secure origins (<code>https://</code> or <code>http://localhost</code>) and after the service worker has registered. Serve the folder with a local HTTP server (e.g. <code>python -m http.server 8080</code>) and reload once.</p>
 
@@ -328,8 +362,8 @@
     <h3>Tax numbers look off</h3>
     <p>Check <em>Settings → Tax included in price</em>. When your catalog prices already contain tax, this must be <em>Yes</em>, otherwise tax will be double-counted.</p>
 
-    <h3>I forgot the admin password</h3>
-    <p>Sign in as another admin and change it in <em>Users</em>. If no admin can sign in, open your browser's DevTools → Application → IndexedDB → <code>lysipos</code> → <code>users</code>, delete the admin user, then reload — the app will re-seed the default <code>admin@lysipos.local</code> / <code>admin123</code>.</p>
+    <h3>I forgot the admin password / can't log in after an import</h3>
+    <p>On the sign-in screen click <strong>Can't log in? Restore default admin account</strong>. This re-adds <code>admin@lysipos.local</code> / <code>admin123</code> without touching your imported products, sales or customers. Change the password immediately in <em>Users</em>. As an extra safety net, the app now also re-adds a default admin whenever an import finishes without leaving a working admin behind.</p>
 
     <h3>Can multiple devices share data?</h3>
     <p>Not out of the box — data is local to each browser. Use <em>Export</em> / <em>Import</em> to move data between devices. Adding real multi-device sync would require a small backend (out of scope for this offline PWA).</p>

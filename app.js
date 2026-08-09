@@ -4,6 +4,30 @@
 import { code128BSvg, qrSvg } from './codes.js';
 import { openScanner, isScannerSupported } from './scanner.js';
 
+/* -------------------- console capture (for Dev Console page) -------------------- */
+const LOG_RING = [];
+const LOG_MAX = 400;
+(function patchConsole() {
+  const orig = { log: console.log, info: console.info, warn: console.warn, error: console.error };
+  const push = (level, args) => {
+    try {
+      const msg = Array.from(args).map(a => {
+        if (a instanceof Error) return a.stack || a.message;
+        if (typeof a === 'object') { try { return JSON.stringify(a); } catch { return String(a); } }
+        return String(a);
+      }).join(' ');
+      LOG_RING.push({ at: new Date().toISOString(), level, msg });
+      if (LOG_RING.length > LOG_MAX) LOG_RING.splice(0, LOG_RING.length - LOG_MAX);
+    } catch {}
+  };
+  console.log = (...a) => { push('log', a); orig.log.apply(console, a); };
+  console.info = (...a) => { push('info', a); orig.info.apply(console, a); };
+  console.warn = (...a) => { push('warn', a); orig.warn.apply(console, a); };
+  console.error = (...a) => { push('error', a); orig.error.apply(console, a); };
+  window.addEventListener('error', (e) => push('error', [e.message + ' @ ' + (e.filename || '?') + ':' + (e.lineno || '?')]));
+  window.addEventListener('unhandledrejection', (e) => push('error', ['Unhandled: ' + (e.reason?.stack || e.reason || 'unknown')]));
+})();
+
 /* -------------------- utilities -------------------- */
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -188,6 +212,21 @@ async function audit(action, meta = {}) {
   await dbPut('audit', entry);
 }
 
+// Ensure at least one working admin exists. Idempotent — safe to call any time.
+async function ensureAdmin() {
+  const users = await dbGetAll('users');
+  const hasWorkingAdmin = users.some(u => u.role === 'admin' && u.active !== false && u.passHash);
+  if (hasWorkingAdmin) return null;
+  const admin = {
+    id: uid('u_'), name: 'Owner',
+    email: 'admin@lysipos.local', role: 'admin', active: true,
+    pin: '1234', passHash: await sha256('admin123'), createdAt: nowISO()
+  };
+  await dbPut('users', admin);
+  state.users = await dbGetAll('users');
+  return admin;
+}
+
 /* -------------------- backup / import helpers -------------------- */
 function snapshotData() {
   return {
@@ -292,14 +331,17 @@ async function applyImport(data) {
   }
   if (norm.settings) await dbPut('settings', { ...DEFAULT_SETTINGS, ...norm.settings, key: 'app' });
   await loadAll();
+  // Guarantee a working admin so the operator can log in after import
+  const added = await ensureAdmin();
   await audit('data.import', {
     products: (norm.products || []).length,
     sales: (norm.sales || []).length,
     suppliers: (norm.suppliers || []).length,
     categories: (norm.categories || []).length,
-    expenses: (norm.expenses || []).length
+    expenses: (norm.expenses || []).length,
+    addedDefaultAdmin: !!added
   });
-  return norm;
+  return { ...norm, addedDefaultAdmin: !!added };
 }
 
 /* Rolling in-app backups */
@@ -532,6 +574,7 @@ function shell() {
           <div class="section">Admin</div>
           <a href="#/users">🔐 Users</a>
           <a href="#/settings">⚙️ Settings</a>
+          <a href="#/dev">🛠️ Dev Console</a>
           <a href="manual.html" target="_blank" rel="noopener">📖 User Manual</a>
         </div>
         <div style="flex:1"></div>
@@ -614,6 +657,9 @@ function renderLogin() {
           <div class="muted" style="margin-top:10px;font-size:12px">
             Default account seeded on first run — change it in <b>Users</b> after signing in.
           </div>
+          <div style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--border);text-align:center">
+            <a href="#" id="recoverAdmin" style="font-size:12px">Can't log in? Restore default admin account</a>
+          </div>
         </div>
       </div>
     </div>`;
@@ -625,6 +671,18 @@ function renderLogin() {
     else toast(r.error, 'bad');
   });
   $('#loginPass').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#loginBtn').click(); });
+  $('#recoverAdmin').addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    if (!(await confirmModal('This will re-add the default admin (admin@lysipos.local / admin123). Your other data is kept.\n\nContinue?', { okText: 'Restore admin' }))) return;
+    const added = await ensureAdmin();
+    if (added) {
+      $('#loginEmail').value = 'admin@lysipos.local';
+      $('#loginPass').value = 'admin123';
+      toast('Default admin restored — try signing in', 'good');
+    } else {
+      toast('An admin already exists. If you forgot the password, use browser DevTools → IndexedDB → lysipos → users to delete it, then reload.', 'warn');
+    }
+  });
 }
 
 /* -------------------- render dispatch -------------------- */
@@ -2085,6 +2143,271 @@ route('/settings', async () => {
   return el;
 });
 
+/* -------------------- Dev Console (admin) -------------------- */
+route('/dev', async () => {
+  if (!requireRole('admin')) return '<div class="page"><h1>Dev Console</h1><div class="muted">Admin only.</div></div>';
+
+  const el = document.createElement('div');
+  el.className = 'page';
+  el.innerHTML = html`
+    <h1>Dev Console</h1><div class="sub">Diagnostics, user password reset, and data-store maintenance.</div>
+
+    <div class="grid cols-2">
+      <div class="card"><div class="card-h"><h3>Session</h3><div class="spacer"></div><span class="pill" id="dcNet"></span></div>
+        <div class="card-b" id="dcSession"></div>
+      </div>
+      <div class="card"><div class="card-h"><h3>Storage</h3><div class="spacer"></div><span class="pill" id="dcQuota"></span></div>
+        <div class="card-b">
+          <table class="data" id="dcStores"><thead><tr><th>Store</th><th class="right">Rows</th><th class="right">Est. bytes</th><th></th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px"><div class="card-h"><h3>Users — quick actions</h3><div class="spacer"></div><button class="btn small" id="dcNewAdmin">+ Ensure default admin</button></div>
+      <div class="card-b" style="overflow:auto;max-height:320px">
+        <table class="data" id="dcUsers"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Has password?</th><th></th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+
+    <div class="grid cols-2" style="margin-top:14px">
+      <div class="card"><div class="card-h"><h3>Audit log</h3><div class="spacer"></div>
+        <span class="pill" id="dcAuditCount">—</span>
+        <button class="btn small" id="dcAuditDl">⤓ CSV</button>
+        <button class="btn small danger" id="dcAuditClear">Clear</button>
+      </div>
+        <div class="card-b" style="max-height:320px;overflow:auto">
+          <table class="data" id="dcAudit"><thead><tr><th>When</th><th>By</th><th>Action</th><th>Meta</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+      <div class="card"><div class="card-h"><h3>Console output</h3><div class="spacer"></div>
+        <select id="dcLogFilter" style="max-width:140px"><option value="">All levels</option><option value="warn">warn+</option><option value="error">error only</option></select>
+        <button class="btn small" id="dcLogRefresh">↻</button>
+        <button class="btn small danger" id="dcLogClear">Clear</button>
+      </div>
+        <div class="card-b" style="max-height:320px;overflow:auto;padding:0">
+          <pre id="dcLog" style="margin:0;padding:12px;font-family:ui-monospace,Menlo,monospace;font-size:11px;white-space:pre-wrap;word-break:break-word"></pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px"><div class="card-h"><h3>Danger zone</h3></div>
+      <div class="card-b">
+        <div class="row">
+          <button class="btn" id="dcUnregSw">↺ Unregister service worker</button>
+          <button class="btn danger" id="dcDropDb">⚠ Delete IndexedDB &amp; reload</button>
+          <button class="btn danger" id="dcResetAll">⚠ Reset all data &amp; reseed</button>
+        </div>
+        <div class="muted" style="margin-top:8px;font-size:12px">Unregistering the service worker forces the next page load to pick up new app code. Deleting the DB wipes every store (settings, products, sales, users…). Reset re-seeds the demo store.</div>
+      </div>
+    </div>
+  `;
+
+  /* ---------- helpers ---------- */
+  const renderSession = async () => {
+    const box = $('#dcSession', el);
+    let quota = null;
+    try { if (navigator.storage?.estimate) quota = await navigator.storage.estimate(); } catch {}
+    const swRegs = await (navigator.serviceWorker?.getRegistrations?.().catch(() => [])) || [];
+    const rows = [
+      ['Current user', `${state.user?.name || '—'} (${state.user?.role || '—'})`],
+      ['User email', state.user?.email || '—'],
+      ['Business', state.settings?.businessName || '—'],
+      ['App version', 'lysipos-v3'],
+      ['DB name / version', `${DB_NAME} / ${DB_VER}`],
+      ['User agent', navigator.userAgent],
+      ['Language', navigator.language],
+      ['Online', String(navigator.onLine)],
+      ['Display mode', window.matchMedia('(display-mode: standalone)').matches ? 'standalone (PWA installed)' : 'browser tab'],
+      ['Camera scanner supported', String(isScannerSupported())],
+      ['File System Access API', String('showDirectoryPicker' in window)],
+      ['Service workers active', String(swRegs.length)],
+      ['Storage estimate', quota ? `${(quota.usage / 1048576).toFixed(2)} MB used / ${(quota.quota / 1048576).toFixed(0)} MB quota` : 'n/a']
+    ];
+    box.innerHTML = rows.map(([k, v]) => `<div style="display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-bottom:1px dashed var(--border)"><div class="muted" style="min-width:200px">${escapeHtml(k)}</div><div class="mono" style="text-align:right;word-break:break-all">${escapeHtml(v)}</div></div>`).join('');
+    $('#dcNet', el).textContent = navigator.onLine ? '● Online' : '● Offline';
+    $('#dcQuota', el).textContent = quota ? `${(quota.usage / 1048576).toFixed(1)} MB` : '—';
+  };
+
+  const renderStores = async () => {
+    const rows = [];
+    for (const s of STORES) {
+      const all = await dbGetAll(s);
+      const bytes = new Blob([JSON.stringify(all)]).size;
+      rows.push([s, all.length, bytes]);
+    }
+    $('#dcStores tbody', el).innerHTML = rows.map(([s, n, b]) => html`
+      <tr>
+        <td class="mono">${s}</td>
+        <td class="right mono">${n}</td>
+        <td class="right mono">${b < 1024 ? b + ' B' : b < 1048576 ? (b / 1024).toFixed(1) + ' KB' : (b / 1048576).toFixed(2) + ' MB'}</td>
+        <td class="right"><button class="btn small danger" data-clear="${s}" ${s === 'settings' ? 'disabled title="Never clear settings"' : ''}>Clear</button></td>
+      </tr>`).join('');
+    el.querySelectorAll('[data-clear]').forEach(btn => btn.addEventListener('click', async () => {
+      const s = btn.dataset.clear;
+      if (!(await confirmModal(`Clear the "${s}" store? This cannot be undone.`, { danger: true, okText: 'Clear' }))) return;
+      await dbClear(s);
+      if (s === 'users') await ensureAdmin();
+      await loadAll(); audit('dev.clearStore', { store: s });
+      toast(`Cleared ${s}`, 'good');
+      renderStores(); renderUsers();
+    }));
+  };
+
+  const renderUsers = async () => {
+    const users = await dbGetAll('users');
+    $('#dcUsers tbody', el).innerHTML = users.map(u => html`
+      <tr data-id="${u.id}">
+        <td>${escapeHtml(u.name || '')}</td>
+        <td class="mono">${escapeHtml(u.email || '')}</td>
+        <td><span class="badge">${escapeHtml(u.role || '')}</span></td>
+        <td>${u.active !== false ? '<span class="badge good">active</span>' : '<span class="badge bad">disabled</span>'}</td>
+        <td>${u.passHash ? '<span class="badge good">yes</span>' : '<span class="badge bad">no</span>'}</td>
+        <td class="right">
+          <button class="btn small" data-pw>Change password</button>
+          <button class="btn small" data-toggle>${u.active !== false ? 'Disable' : 'Enable'}</button>
+          <button class="btn small" data-role>Change role</button>
+          ${u.id === state.user.id ? '' : '<button class="btn small danger" data-del>Delete</button>'}
+        </td>
+      </tr>`).join('');
+    el.querySelectorAll('#dcUsers [data-pw]').forEach(b => b.addEventListener('click', () => openPwChange(b.closest('tr').dataset.id)));
+    el.querySelectorAll('#dcUsers [data-toggle]').forEach(b => b.addEventListener('click', async () => {
+      const u = users.find(x => x.id === b.closest('tr').dataset.id); if (!u) return;
+      u.active = u.active === false;
+      await dbPut('users', u); audit('dev.userToggle', { id: u.id, active: u.active });
+      toast(u.active ? 'Enabled' : 'Disabled', 'good'); renderUsers();
+    }));
+    el.querySelectorAll('#dcUsers [data-role]').forEach(b => b.addEventListener('click', () => openRoleChange(b.closest('tr').dataset.id)));
+    el.querySelectorAll('#dcUsers [data-del]').forEach(b => b.addEventListener('click', async () => {
+      if (!(await confirmModal('Delete this user?', { danger: true }))) return;
+      const id = b.closest('tr').dataset.id;
+      await dbDel('users', id); await ensureAdmin(); await loadAll();
+      audit('dev.userDelete', { id }); toast('Deleted', 'good'); renderUsers();
+    }));
+  };
+
+  const openPwChange = (uid_) => {
+    const u = state.users.find(x => x.id === uid_); if (!u) return;
+    const body = document.createElement('div');
+    body.innerHTML = html`
+      <div class="field"><label>User</label><input value="${escapeHtml(u.name)} · ${escapeHtml(u.email)}" disabled></div>
+      <div class="field"><label>New password</label><input id="pw1" type="password" autofocus></div>
+      <div class="field"><label>Confirm password</label><input id="pw2" type="password"></div>
+      <div class="muted" style="font-size:12px">Password is hashed with SHA-256 before storage. No plaintext is kept.</div>`;
+    const foot = document.createElement('div');
+    foot.innerHTML = '<button class="btn ghost" data-cancel>Cancel</button><button class="btn primary" data-ok>Set password</button>';
+    const m = openModal({ title: 'Change password', body, footer: foot });
+    foot.querySelector('[data-cancel]').addEventListener('click', m.close);
+    foot.querySelector('[data-ok]').addEventListener('click', async () => {
+      const p1 = $('#pw1', body).value, p2 = $('#pw2', body).value;
+      if (!p1 || p1.length < 4) return toast('Password must be at least 4 characters', 'bad');
+      if (p1 !== p2) return toast('Passwords do not match', 'bad');
+      u.passHash = await sha256(p1);
+      await dbPut('users', u); audit('dev.passwordChange', { id: u.id });
+      m.close(); toast('Password updated for ' + u.name, 'good'); renderUsers();
+    });
+  };
+
+  const openRoleChange = (uid_) => {
+    const u = state.users.find(x => x.id === uid_); if (!u) return;
+    const body = document.createElement('div');
+    body.innerHTML = html`
+      <div class="field"><label>User</label><input value="${escapeHtml(u.name)} · ${escapeHtml(u.email)}" disabled></div>
+      <div class="field"><label>Role</label>
+        <select id="rl">
+          <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>admin</option>
+          <option value="manager" ${u.role === 'manager' ? 'selected' : ''}>manager</option>
+          <option value="cashier" ${u.role === 'cashier' ? 'selected' : ''}>cashier</option>
+        </select>
+      </div>`;
+    const foot = document.createElement('div');
+    foot.innerHTML = '<button class="btn ghost" data-cancel>Cancel</button><button class="btn primary" data-ok>Save</button>';
+    const m = openModal({ title: 'Change role', body, footer: foot });
+    foot.querySelector('[data-cancel]').addEventListener('click', m.close);
+    foot.querySelector('[data-ok]').addEventListener('click', async () => {
+      u.role = $('#rl', body).value;
+      await dbPut('users', u); await ensureAdmin();
+      audit('dev.roleChange', { id: u.id, role: u.role });
+      m.close(); toast('Role updated', 'good'); renderUsers();
+    });
+  };
+
+  const renderAudit = async () => {
+    const all = (await dbGetAll('audit')).sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, 100);
+    $('#dcAuditCount', el).textContent = `${all.length} shown`;
+    $('#dcAudit tbody', el).innerHTML = all.map(a => html`
+      <tr>
+        <td class="mono" style="white-space:nowrap">${fmtDate(a.at)}</td>
+        <td>${escapeHtml(a.byName || '')}</td>
+        <td class="mono">${escapeHtml(a.action)}</td>
+        <td class="mono" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(JSON.stringify(a.meta || {}))}">${escapeHtml(JSON.stringify(a.meta || {}))}</td>
+      </tr>`).join('') || `<tr><td colspan="4"><div class="empty">No audit entries</div></td></tr>`;
+  };
+
+  const renderLogs = () => {
+    const filter = $('#dcLogFilter', el).value;
+    const rank = { log: 0, info: 0, warn: 1, error: 2 };
+    const min = filter === 'error' ? 2 : filter === 'warn' ? 1 : 0;
+    const list = LOG_RING.filter(l => (rank[l.level] ?? 0) >= min);
+    const color = (lv) => lv === 'error' ? 'var(--bad)' : lv === 'warn' ? 'var(--warn)' : 'var(--muted)';
+    $('#dcLog', el).innerHTML = list.map(l => `<div><span style="color:${color(l.level)}">[${l.level}]</span> <span class="muted">${escapeHtml(l.at.slice(11, 19))}</span> ${escapeHtml(l.msg)}</div>`).join('') || '<div class="muted">No log entries yet.</div>';
+  };
+
+  queueMicrotask(async () => {
+    await renderSession();
+    await renderStores();
+    await renderUsers();
+    await renderAudit();
+    renderLogs();
+
+    $('#dcNewAdmin', el).addEventListener('click', async () => {
+      const added = await ensureAdmin();
+      toast(added ? 'Default admin created' : 'An admin already exists', added ? 'good' : 'warn');
+      renderUsers();
+    });
+    $('#dcLogRefresh', el).addEventListener('click', renderLogs);
+    $('#dcLogFilter', el).addEventListener('change', renderLogs);
+    $('#dcLogClear', el).addEventListener('click', () => { LOG_RING.length = 0; renderLogs(); });
+    $('#dcAuditDl', el).addEventListener('click', async () => {
+      const all = (await dbGetAll('audit')).sort((a, b) => (a.at < b.at ? 1 : -1));
+      const rows = [['At', 'By', 'Action', 'Meta']];
+      for (const a of all) rows.push([a.at, a.byName || '', a.action, JSON.stringify(a.meta || {})]);
+      const csv = rows.map(r => r.map(v => { const s = String(v ?? ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(',')).join('\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `audit-${dayKey()}.csv`; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    });
+    $('#dcAuditClear', el).addEventListener('click', async () => {
+      if (!(await confirmModal('Clear all audit entries? This cannot be undone.', { danger: true, okText: 'Clear' }))) return;
+      await dbClear('audit'); toast('Audit log cleared', 'good'); renderAudit();
+    });
+    $('#dcUnregSw', el).addEventListener('click', async () => {
+      if (!navigator.serviceWorker) return toast('No service worker available', 'warn');
+      const regs = await navigator.serviceWorker.getRegistrations();
+      for (const r of regs) await r.unregister();
+      toast(`Unregistered ${regs.length} service worker(s). Reload to pick up new code.`, 'good');
+    });
+    $('#dcDropDb', el).addEventListener('click', async () => {
+      if (!(await confirmModal('This will delete ALL LysiPOS data (products, sales, users, settings). The page will reload. Continue?', { danger: true, okText: 'Delete everything' }))) return;
+      try { if (_db) { _db.close(); _db = null; } } catch {}
+      indexedDB.deleteDatabase(DB_NAME);
+      sessionStorage.clear();
+      setTimeout(() => location.reload(), 600);
+    });
+    $('#dcResetAll', el).addEventListener('click', async () => {
+      if (!(await confirmModal('Erase ALL data and reseed the demo store? You will be logged out.', { danger: true, okText: 'Erase' }))) return;
+      for (const s of STORES) await dbClear(s);
+      _db = null; await seedIfEmpty(); await loadAll(); sessionStorage.clear();
+      state.user = null; toast('Reset complete', 'good'); render();
+    });
+
+    // Keep the online pill live while the page is open
+    const onNet = () => { $('#dcNet', el) && ($('#dcNet', el).textContent = navigator.onLine ? '● Online' : '● Offline'); };
+    window.addEventListener('online', onNet); window.addEventListener('offline', onNet);
+  });
+
+  return el;
+});
+
 /* -------------------- PWA install prompt -------------------- */
 let deferredPrompt = null;
 window.addEventListener('beforeinstallprompt', (e) => {
@@ -2095,6 +2418,7 @@ window.addEventListener('beforeinstallprompt', (e) => {
 /* -------------------- bootstrap -------------------- */
 (async function boot() {
   await seedIfEmpty();
+  await ensureAdmin(); // safety net for imported DBs that lost the admin
   await loadAll();
   await restoreSession();
   render();

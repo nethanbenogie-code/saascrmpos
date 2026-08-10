@@ -131,10 +131,44 @@ label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px
 .kpi .delta.up { color: var(--good); }
 .kpi .delta.down { color: var(--bad); }
 
+/* Clickable KPIs and cards */
+.kpi-link, .card-link {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color .15s ease, transform .06s ease, box-shadow .15s ease;
+  position: relative;
+}
+.kpi-link:hover, .card-link:hover {
+  border-color: var(--accent);
+  box-shadow: 0 8px 24px rgba(34,211,238,.12);
+}
+.kpi-link:active, .card-link:active { transform: translateY(1px); }
+.kpi-link::after {
+  content: '';
+  position: absolute; top: 10px; right: 12px;
+  width: 6px; height: 6px; border-right: 2px solid var(--muted); border-top: 2px solid var(--muted);
+  transform: rotate(45deg); opacity: .5; transition: opacity .15s ease, border-color .15s ease;
+}
+.kpi-link:hover::after { opacity: 1; border-color: var(--accent); }
+
+/* Table rows with data-nav */
+table.data.clickable-rows tbody tr[data-nav] { cursor: pointer; }
+table.data.clickable-rows tbody tr[data-nav]:hover td {
+  background: color-mix(in oklab, var(--accent), transparent 92%);
+}
+
 table.data { width: 100%; border-collapse: separate; border-spacing: 0; }
 table.data th, table.data td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
 table.data th { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); background: var(--panel-2); position: sticky; top: 0; }
 table.data tr:hover td { background: color-mix(in oklab, var(--panel-3), transparent 60%); }
+table.data th.sortable-th { cursor: pointer; user-select: none; transition: color .1s ease; }
+table.data th.sortable-th:hover { color: var(--accent); }
+table.data th .sort-arrow { display: inline-block; margin-left: 6px; font-size: 10px; opacity: .35; transition: opacity .1s ease, color .1s ease; }
+table.data th.sortable-th:hover .sort-arrow { opacity: .8; }
+table.data th.sorted-asc, table.data th.sorted-desc { color: var(--accent); }
+table.data th.sorted-asc .sort-arrow, table.data th.sorted-desc .sort-arrow { opacity: 1; color: var(--accent); }
 .right { text-align: right; }
 .mono { font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .muted { color: var(--muted); }

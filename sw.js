@@ -1,4 +1,4 @@
-const VERSION = 'lysipos-v8';
+const VERSION = 'lysipos-v11';
 const CORE = [
   './',
   './index.html',

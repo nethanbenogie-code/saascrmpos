@@ -84,6 +84,8 @@ function openModal({ title, body, footer, size = 'md', onClose }) {
   const close = () => { back.remove(); onClose && onClose(); };
   back.addEventListener('click', (e) => { if (e.target === back) close(); });
   $('[data-close]', back).addEventListener('click', close);
+  // Wire sorting on any tables inside the modal
+  setTimeout(() => { try { applySortableToAll(back); } catch {} }, 0);
   return { close, back, bodyEl, footEl };
 }
 
@@ -532,9 +534,125 @@ async function renderCurrent() {
   }
   // Highlight active nav
   $$('.nav a').forEach(a => a.classList.toggle('active', a.getAttribute('href') === '#' + key));
+  // Wire sorting on any table.data on the current page
+  setTimeout(() => applySortableToAll(view), 0);
 }
 
 window.addEventListener('hashchange', renderCurrent);
+
+// Global delegate: any element with data-nav="#/route" behaves like a hash link.
+document.addEventListener('click', (e) => {
+  const el = e.target.closest?.('[data-nav]');
+  if (!el) return;
+  // Ignore clicks on nested inputs, buttons, or real links inside the row
+  if (e.target.closest('button, a, input, select, textarea')) return;
+  const href = el.getAttribute('data-nav');
+  if (href) { e.preventDefault(); location.hash = href; }
+});
+
+/* -------------------- generic table sorting -------------------- */
+function sortRows(tbody, colIdx, dir) {
+  const rows = Array.from(tbody.children).filter(r => r.tagName === 'TR' && r.children[colIdx]);
+  if (!rows.length) return;
+
+  const getKey = (row) => {
+    const cell = row.children[colIdx]; if (!cell) return '';
+    // Prefer data-sort override on the cell if provided
+    if (cell.hasAttribute('data-sort')) {
+      const v = cell.getAttribute('data-sort');
+      const n = parseFloat(v);
+      return isNaN(n) ? v.toLowerCase() : n;
+    }
+    // If cell contains a form field, read its current value
+    const input = cell.querySelector('input, select, textarea');
+    let txt = input ? String(input.value ?? '') : cell.textContent;
+    txt = txt.trim();
+    if (txt === '' || txt === '—') return { empty: true };
+    // Numeric? Strip currency symbols, commas, spaces, keep -.
+    const numeric = txt.replace(/[^\d.\-]/g, '');
+    if (numeric && !isNaN(parseFloat(numeric)) && /^\s*[-+]?[\d,.\s]*(?:\.\d+)?\s*[A-Za-z₱$€£¥%]*$/.test(txt.replace(/[₱$€£¥%,]/g, ''))) {
+      const asNum = parseFloat(numeric);
+      if (!isNaN(asNum)) return asNum;
+    }
+    // Date? Only if it looks date-ish
+    if (/\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{2,4}/.test(txt)) {
+      const t = Date.parse(txt);
+      if (!isNaN(t)) return t;
+    }
+    return txt.toLowerCase();
+  };
+
+  const mul = dir === 'asc' ? 1 : -1;
+  rows.sort((a, b) => {
+    const ka = getKey(a), kb = getKey(b);
+    // Empties always go to the bottom regardless of direction
+    if (ka?.empty && !kb?.empty) return 1;
+    if (kb?.empty && !ka?.empty) return -1;
+    if (ka?.empty && kb?.empty) return 0;
+    if (typeof ka === 'number' && typeof kb === 'number') return (ka - kb) * mul;
+    return String(ka).localeCompare(String(kb), undefined, { numeric: true }) * mul;
+  });
+
+  const frag = document.createDocumentFragment();
+  for (const r of rows) frag.appendChild(r);
+  tbody.appendChild(frag);
+}
+
+function makeSortable(table) {
+  if (!table || table.dataset.sortable === '1') return;
+  const thead = table.tHead; if (!thead) return;
+  const ths = thead.querySelectorAll('th');
+  if (!ths.length) return;
+  table.dataset.sortable = '1';
+
+  ths.forEach((th, colIdx) => {
+    if (th.hasAttribute('data-nosort')) return;
+    // Skip header cells with no meaningful text (like checkbox columns or action columns)
+    if (!th.textContent.trim() && !th.hasAttribute('data-sortable')) return;
+    th.classList.add('sortable-th');
+    if (!th.querySelector('.sort-arrow')) {
+      const arrow = document.createElement('span');
+      arrow.className = 'sort-arrow';
+      arrow.textContent = '⇅';
+      th.appendChild(arrow);
+    }
+    th.addEventListener('click', (e) => {
+      // Don't sort if the click was on an input/button that sits in the header
+      if (e.target.closest('input, button, select, textarea, a')) return;
+      const curCol = table.dataset.sortCol;
+      const curDir = table.dataset.sortDir;
+      const dir = (String(colIdx) === curCol && curDir === 'asc') ? 'desc' : 'asc';
+      table.dataset.sortCol = String(colIdx);
+      table.dataset.sortDir = dir;
+      // Reset arrows
+      thead.querySelectorAll('.sort-arrow').forEach(a => { a.textContent = '⇅'; a.parentElement.classList.remove('sorted-asc', 'sorted-desc'); });
+      const arrow = th.querySelector('.sort-arrow');
+      arrow.textContent = dir === 'asc' ? '↑' : '↓';
+      th.classList.add(dir === 'asc' ? 'sorted-asc' : 'sorted-desc');
+      const tbody = table.tBodies[0]; if (tbody) sortRows(tbody, colIdx, dir);
+    });
+  });
+
+  // Keep sort applied through internal tbody re-renders (e.g. filter changes)
+  const tbody = table.tBodies[0];
+  if (tbody && 'MutationObserver' in window) {
+    const obs = new MutationObserver((mutations) => {
+      if (table._sortRestoring) return;
+      if (table.dataset.sortCol == null) return;
+      if (!mutations.some(m => m.addedNodes.length > 0)) return;
+      table._sortRestoring = true;
+      try {
+        sortRows(tbody, Number(table.dataset.sortCol), table.dataset.sortDir || 'asc');
+        obs.takeRecords();
+      } finally { table._sortRestoring = false; }
+    });
+    obs.observe(tbody, { childList: true });
+  }
+}
+
+function applySortableToAll(root = document) {
+  root.querySelectorAll('table.data').forEach(makeSortable);
+}
 
 /* -------------------- auth -------------------- */
 async function login(email, password) {
@@ -737,28 +855,44 @@ route('/dashboard', async () => {
   return html`
     <div class="page">
       <h1>Dashboard</h1>
-      <div class="sub">Overview of today's activity and this week.</div>
+      <div class="sub">Overview of today's activity and this week. <span class="muted">— cards below are clickable.</span></div>
       <div class="grid cols-4" style="margin-bottom:14px">
-        <div class="kpi"><div class="label">Today's Revenue</div><div class="value">${money(revToday)}</div><div class="delta">${salesToday.length} orders</div></div>
-        <div class="kpi"><div class="label">Items Sold Today</div><div class="value">${items}</div><div class="delta">Avg ticket ${money(avg)}</div></div>
-        <div class="kpi"><div class="label">Week Revenue</div><div class="value">${money(revWeek)}</div><div class="delta">${salesWeek.length} orders</div></div>
-        <div class="kpi"><div class="label">Customers</div><div class="value">${state.customers.length}</div><div class="delta">${state.products.length} products</div></div>
+        <a class="kpi kpi-link" href="#/sales" title="Open Sales history">
+          <div class="label">Today's Revenue</div>
+          <div class="value">${money(revToday)}</div>
+          <div class="delta">${salesToday.length} orders →</div>
+        </a>
+        <a class="kpi kpi-link" href="#/sales" title="Open Sales history">
+          <div class="label">Items Sold Today</div>
+          <div class="value">${items}</div>
+          <div class="delta">Avg ticket ${money(avg)} →</div>
+        </a>
+        <a class="kpi kpi-link" href="#/reports" title="Open Reports">
+          <div class="label">Week Revenue</div>
+          <div class="value">${money(revWeek)}</div>
+          <div class="delta">${salesWeek.length} orders →</div>
+        </a>
+        <a class="kpi kpi-link" href="#/customers" title="Open Customers">
+          <div class="label">Customers</div>
+          <div class="value">${state.customers.length}</div>
+          <div class="delta"><a href="#/products" onclick="event.stopPropagation()" style="color:var(--accent)">${state.products.length} products →</a></div>
+        </a>
       </div>
       <div class="grid cols-2">
-        <div class="card">
-          <div class="card-h"><h3>Last 7 days</h3></div>
+        <a class="card card-link" href="#/reports" title="Open Reports">
+          <div class="card-h"><h3>Last 7 days</h3><div class="spacer"></div><span class="pill">View reports →</span></div>
           <div class="card-b">
             <div style="display:flex;gap:6px;height:80px;align-items:flex-end">${spark}</div>
             <div style="display:flex;gap:6px;color:var(--muted);font-size:11px;margin-top:6px">
               ${days.map(d => `<div style="flex:1;text-align:center">${d.d.slice(5)}</div>`).join('')}
             </div>
           </div>
-        </div>
+        </a>
         <div class="card">
-          <div class="card-h"><h3>Top products (7d)</h3></div>
+          <div class="card-h"><h3>Top products (7d)</h3><div class="spacer"></div><a class="btn small" href="#/products">All products</a></div>
           <div class="card-b">
-            ${topProducts.length ? html`<table class="data"><thead><tr><th>Product</th><th class="right">Qty</th></tr></thead>
-              <tbody>${topProducts.map(t => `<tr><td>${escapeHtml(t.product?.name || '—')}</td><td class="right mono">${t.qty}</td></tr>`).join('')}</tbody></table>`
+            ${topProducts.length ? html`<table class="data clickable-rows"><thead><tr><th>Product</th><th class="right">Qty</th></tr></thead>
+              <tbody>${topProducts.map(t => `<tr data-nav="#/products"><td>${escapeHtml(t.product?.name || '—')}</td><td class="right mono">${t.qty}</td></tr>`).join('')}</tbody></table>`
               : '<div class="empty"><div class="icn">📦</div>No sales yet — try ringing one up in <a href="#/pos">POS</a>.</div>'}
           </div>
         </div>
@@ -766,9 +900,9 @@ route('/dashboard', async () => {
       <div class="card" style="margin-top:14px">
         <div class="card-h"><h3>Low stock</h3><div class="spacer"></div><a class="btn small" href="#/inventory">Manage</a></div>
         <div class="card-b">
-          ${lowStock.length ? html`<table class="data"><thead><tr><th>Product</th><th>SKU</th><th class="right">Stock</th></tr></thead>
-              <tbody>${lowStock.map(p => `<tr><td>${escapeHtml(p.name)}</td><td class="mono">${escapeHtml(p.sku||'')}</td><td class="right"><span class="badge ${p.stock<=0?'bad':'warn'}">${p.stock ?? 0}</span></td></tr>`).join('')}</tbody></table>`
-              : '<div class="muted">All products are well stocked.</div>'}
+          ${lowStock.length ? html`<table class="data clickable-rows"><thead><tr><th>Product</th><th>SKU</th><th class="right">Stock</th></tr></thead>
+              <tbody>${lowStock.map(p => `<tr data-nav="#/inventory"><td>${escapeHtml(p.name)}</td><td class="mono">${escapeHtml(p.sku||'')}</td><td class="right"><span class="badge ${p.stock<=0?'bad':'warn'}">${p.stock ?? 0}</span></td></tr>`).join('')}</tbody></table>`
+              : '<div class="muted">All products are well stocked. <a href="#/inventory">Adjust stock</a></div>'}
         </div>
       </div>
     </div>`;
@@ -1030,8 +1164,9 @@ route('/pos', async () => {
   el.innerHTML = html`
     <div class="catalog">
       <div class="filters">
-        <input id="posSearch" placeholder="Search name, SKU or scan barcode…" autofocus />
-        <button class="btn" id="posScan" title="Scan with camera">📷 Scan</button>
+        <input id="posSearch" placeholder="Search name, SKU or scan barcode…  (F2)" autofocus />
+        <button class="btn" id="posScan" title="Scan with camera (F3)">📷 Scan</button>
+        <button class="btn" id="posHelp" title="Keyboard shortcuts (F1)">⌨️</button>
         <select id="posCat" style="max-width:180px">
           <option value="">All categories</option>
           ${state.categories.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}
@@ -1112,6 +1247,84 @@ route('/pos', async () => {
       try { state.cart = JSON.parse(held); sessionStorage.removeItem('lysipos:heldCart'); refreshCart(); toast('Restored held cart'); } catch {}
     }
     $('#cartPay', el).addEventListener('click', openCheckout);
+
+    /* ---------- Keyboard shortcuts (scoped to POS route) ---------- */
+    const SHORTCUTS = [
+      { keys: 'F1',        label: 'Show this help' },
+      { keys: 'F2 / Ctrl+K', label: 'Focus search / scan box' },
+      { keys: 'F3',        label: 'Open camera scanner' },
+      { keys: 'F4',        label: 'Attach a customer' },
+      { keys: 'F6',        label: 'Hold the current sale' },
+      { keys: 'F7',        label: 'Clear the cart' },
+      { keys: 'F9 / Ctrl+Enter', label: 'Charge / open checkout' },
+      { keys: '+',         label: 'Increase quantity of the last line' },
+      { keys: '−',         label: 'Decrease quantity of the last line' },
+      { keys: 'Delete',    label: 'Remove the last line' },
+      { keys: 'Esc',       label: 'Clear search box' },
+      { keys: 'Enter',     label: '(inside search) Add exact SKU/barcode match to cart' }
+    ];
+    const openShortcutsHelp = () => {
+      const body = document.createElement('div');
+      body.innerHTML = html`
+        <table class="data" style="width:100%">
+          <thead><tr><th style="width:35%">Shortcut</th><th>Action</th></tr></thead>
+          <tbody>
+            ${SHORTCUTS.map(s => `<tr><td class="mono">${escapeHtml(s.keys)}</td><td>${escapeHtml(s.label)}</td></tr>`).join('')}
+          </tbody>
+        </table>
+        <div class="muted" style="font-size:12px;margin-top:10px">Tip: shortcuts on function keys (F1–F9) work even while typing in the search box. The <b>+/−/Delete</b> keys only fire when no input is focused.</div>`;
+      openModal({ title: '⌨️ POS keyboard shortcuts', body, footer: '<button class="btn primary" data-close2>Close</button>', size: 'lg' })
+        .footEl.querySelector('[data-close2]').addEventListener('click', (e) => e.target.closest('.modal-back').remove());
+    };
+    $('#posHelp', el).addEventListener('click', openShortcutsHelp);
+
+    const inField = () => {
+      const a = document.activeElement;
+      if (!a) return false;
+      if (a.isContentEditable) return true;
+      return /INPUT|TEXTAREA|SELECT/.test(a.tagName);
+    };
+    const posKeyHandler = (e) => {
+      // Never hijack when a modal is open
+      if (document.querySelector('.modal-back')) return;
+
+      // Function keys — work even inside inputs
+      if (e.key === 'F1') { e.preventDefault(); openShortcutsHelp(); return; }
+      if (e.key === 'F2') { e.preventDefault(); const s = $('#posSearch', el); s?.focus(); s?.select(); return; }
+      if (e.key === 'F3') { e.preventDefault(); $('#posScan', el)?.click(); return; }
+      if (e.key === 'F4') { e.preventDefault(); $('#cartCust', el)?.click(); return; }
+      if (e.key === 'F6') { e.preventDefault(); $('#cartHold', el)?.click(); return; }
+      if (e.key === 'F7') { e.preventDefault(); $('#cartClear', el)?.click(); return; }
+      if (e.key === 'F9') { e.preventDefault(); $('#cartPay', el)?.click(); return; }
+
+      // Combos with Ctrl (or Meta on macOS)
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); const s = $('#posSearch', el); s?.focus(); s?.select(); return; }
+      if (mod && e.key === 'Enter') { e.preventDefault(); $('#cartPay', el)?.click(); return; }
+      if (mod && e.key === 'Backspace') { e.preventDefault(); $('#cartClear', el)?.click(); return; }
+
+      // Esc — clear the search box if it's focused; otherwise leave it alone
+      if (e.key === 'Escape') {
+        const s = $('#posSearch', el);
+        if (document.activeElement === s && s.value) {
+          s.value = ''; POS.filterText = ''; renderCatalog();
+        }
+        return;
+      }
+
+      // Line-level shortcuts (only when no input is focused)
+      if (inField()) return;
+      const last = state.cart.items[state.cart.items.length - 1];
+      if (!last) return;
+      if (e.key === '+' || e.key === '=') { e.preventDefault(); setQty(last.productId, last.qty + 1); return; }
+      if (e.key === '-' || e.key === '_') { e.preventDefault(); setQty(last.productId, last.qty - 1); return; }
+      if (e.key === 'Delete')             { e.preventDefault(); removeFromCart(last.productId); return; }
+    };
+
+    // Scope the listener to this route mount — auto-cleanup on hashchange
+    const ac = new AbortController();
+    window.addEventListener('keydown', posKeyHandler, { signal: ac.signal });
+    window.addEventListener('hashchange', () => ac.abort(), { once: true });
   });
 
   return el;

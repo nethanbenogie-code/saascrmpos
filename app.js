@@ -679,9 +679,6 @@ function renderLogin() {
           <div class="muted" style="margin-top:10px;font-size:12px">
             Default account seeded on first run — change it in <b>Users</b> after signing in.
           </div>
-          <div style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--border);text-align:center">
-            <a href="#" id="recoverAdmin" style="font-size:12px">Can't log in? Restore default admin account</a>
-          </div>
         </div>
       </div>
     </div>`;
@@ -693,18 +690,6 @@ function renderLogin() {
     else toast(r.error, 'bad');
   });
   $('#loginPass').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#loginBtn').click(); });
-  $('#recoverAdmin').addEventListener('click', async (ev) => {
-    ev.preventDefault();
-    if (!(await confirmModal('This will re-add the default admin (admin@lysipos.local / admin123). Your other data is kept.\n\nContinue?', { okText: 'Restore admin' }))) return;
-    const added = await ensureAdmin();
-    if (added) {
-      $('#loginEmail').value = 'admin@lysipos.local';
-      $('#loginPass').value = 'admin123';
-      toast('Default admin restored — try signing in', 'good');
-    } else {
-      toast('An admin already exists. If you forgot the password, use browser DevTools → IndexedDB → lysipos → users to delete it, then reload.', 'warn');
-    }
-  });
 }
 
 /* -------------------- render dispatch -------------------- */
@@ -2769,6 +2754,33 @@ async function buildAISystemPrompt() {
   ].join('\n');
 }
 
+// Minimal, safe markdown → HTML for chat bubbles.
+// Escapes first (so no injection), then applies inline formatting.
+function renderChatMd(text) {
+  let s = escapeHtml(text);
+  // Fenced code blocks ```lang\n...\n```
+  s = s.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, _lang, code) =>
+    `<pre style="background:var(--panel-3);padding:8px 10px;border-radius:8px;overflow-x:auto;margin:6px 0;font-family:ui-monospace,Menlo,monospace;font-size:12px">${code.replace(/\n$/, '')}</pre>`);
+  // Inline code
+  s = s.replace(/`([^`\n]+)`/g, '<code style="background:var(--panel-3);padding:1px 5px;border-radius:5px;font-family:ui-monospace,Menlo,monospace;font-size:.92em">$1</code>');
+  // Headings: ###, ##, #
+  s = s.replace(/^###\s+(.+)$/gm, '<div style="font-weight:600;margin-top:6px">$1</div>');
+  s = s.replace(/^##\s+(.+)$/gm, '<div style="font-weight:700;font-size:14px;margin-top:8px">$1</div>');
+  s = s.replace(/^#\s+(.+)$/gm, '<div style="font-weight:700;font-size:15px;margin-top:8px">$1</div>');
+  // Bold **text**  (non-greedy, no newline)
+  s = s.replace(/\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>');
+  // Italic *text* — require non-* boundaries so it does not eat leftover **
+  s = s.replace(/(^|[^*_])\*([^*\n]+?)\*(?!\*)/g, '$1<em>$2</em>');
+  s = s.replace(/(^|[^_])_([^_\n]+?)_(?!_)/g, '$1<em>$2</em>');
+  // Bullet lines "- " or "* "
+  s = s.replace(/^[-*]\s+(.+)$/gm, '• $1');
+  // Numbered lists "1. " — leave the digit, just tidy spacing
+  s = s.replace(/^(\d+)\.\s+/gm, '$1. ');
+  // Strip any stray asterisks the model emitted asymmetrically
+  s = s.replace(/\*\*/g, '');
+  return s;
+}
+
 function openAIChat() {
   if (!canUseAI()) { toast('AI Assistant is not enabled for your account.', 'warn'); return; }
   const provider = state.ai.provider;
@@ -2807,10 +2819,14 @@ function openAIChat() {
 
   const render = () => {
     const box = $('#aiChat', body);
-    box.innerHTML = messages.map(msg => `
-      <div style="display:flex;gap:8px;${msg.role === 'user' ? 'justify-content:flex-end' : ''}">
-        <div style="max-width:85%;padding:8px 12px;border-radius:12px;background:${msg.role === 'user' ? 'var(--panel-3)' : 'var(--panel-2)'};border:1px solid var(--border);white-space:pre-wrap;word-break:break-word">${escapeHtml(msg.content)}${msg.streaming ? '<span class="muted"> ▍</span>' : ''}</div>
-      </div>`).join('') || '<div class="empty" style="padding:20px"><div class="icn">✨</div>Ask about your store, sales, expenses, or how to use LysiPOS.</div>';
+    box.innerHTML = messages.map(msg => {
+      const isUser = msg.role === 'user';
+      const content = isUser ? escapeHtml(msg.content) : renderChatMd(msg.content);
+      return `
+      <div style="display:flex;gap:8px;${isUser ? 'justify-content:flex-end' : ''}">
+        <div style="max-width:85%;padding:8px 12px;border-radius:12px;background:${isUser ? 'var(--panel-3)' : 'var(--panel-2)'};border:1px solid var(--border);white-space:pre-wrap;word-break:break-word">${content}${msg.streaming ? '<span class="muted"> ▍</span>' : ''}</div>
+      </div>`;
+    }).join('') || '<div class="empty" style="padding:20px"><div class="icn">✨</div>Ask about your store, sales, expenses, or how to use LysiPOS.</div>';
     box.scrollTop = box.scrollHeight;
   };
 

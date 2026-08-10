@@ -413,7 +413,14 @@
     <p>Check <em>Settings → Tax included in price</em>. When your catalog prices already contain tax, this must be <em>Yes</em>, otherwise tax will be double-counted.</p>
 
     <h3>I forgot the admin password / can't log in after an import</h3>
-    <p>On the sign-in screen click <strong>Can't log in? Restore default admin account</strong>. This re-adds <code>admin@lysipos.local</code> / <code>admin123</code> without touching your imported products, sales or customers. Change the password immediately in <em>Users</em>. As an extra safety net, the app now also re-adds a default admin whenever an import finishes without leaving a working admin behind.</p>
+    <p>Open <a href="restore-admin.html"><strong>restore-admin.html</strong></a> from the same folder (or same URL) as the app — it's a standalone recovery page that talks directly to the browser's IndexedDB and doesn't require login. From there you can:</p>
+    <ul>
+      <li><strong>Ensure default admin</strong> — re-adds <code>admin@lysipos.local</code> / <code>admin123</code> if none exists.</li>
+      <li><strong>Reset any user's password</strong> — pick a user, type a new password, done.</li>
+      <li><strong>Delete all users &amp; add default admin</strong> — nuclear option that keeps products, sales, and settings.</li>
+      <li><strong>Delete the entire database</strong> — last resort; wipes everything so the app re-seeds a demo store on next load.</li>
+    </ul>
+    <p>As an extra safety net, the app also re-adds a default admin automatically whenever an import finishes without leaving a working admin behind.</p>
 
     <h3>Can multiple devices share data?</h3>
     <p>Not out of the box — data is local to each browser. Use <em>Export</em> / <em>Import</em> to move data between devices. Adding real multi-device sync would require a small backend (out of scope for this offline PWA).</p>

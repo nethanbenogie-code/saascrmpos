@@ -1,4 +1,4 @@
-const VERSION = 'lysipos-v6';
+const VERSION = 'lysipos-v8';
 const CORE = [
   './',
   './index.html',
@@ -10,7 +10,8 @@ const CORE = [
   './manifest.json',
   './icon.svg',
   './icon-maskable.svg',
-  './manual.html'
+  './manual.html',
+  './restore-admin.html'
 ];
 
 self.addEventListener('install', (event) => {

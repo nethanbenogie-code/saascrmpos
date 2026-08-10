@@ -4,6 +4,9 @@
 import { code128BSvg, qrSvg } from './codes.js';
 import { openScanner, isScannerSupported } from './scanner.js';
 import { chatStream, testConnection as aiTest, defaultConfig as aiDefaultConfig, AI_DEFAULTS } from './ai.js';
+import { requestToken as googleRequestToken, revokeToken as googleRevokeToken, userInfo as googleUserInfo, driveUpload, ensureFolder, DRIVE_SCOPE, USERINFO_SCOPE } from './google.js';
+
+const DEFAULT_GOOGLE_CLIENT_ID = '420770991733-j7gi9omi0as65le877snc8825dm3tch5.apps.googleusercontent.com';
 
 /* -------------------- console capture (for Dev Console page) -------------------- */
 const LOG_RING = [];
@@ -189,9 +192,10 @@ const DEFAULT_SETTINGS = {
 };
 
 async function loadAll() {
-  const [settings, aiCfg, users, products, categories, customers, suppliers, wallets, expenses, sales] = await Promise.all([
+  const [settings, aiCfg, googleCfg, users, products, categories, customers, suppliers, wallets, expenses, sales] = await Promise.all([
     dbGet('settings', 'app'),
     dbGet('settings', 'ai'),
+    dbGet('settings', 'google'),
     dbGetAll('users'), dbGetAll('products'), dbGetAll('categories'),
     dbGetAll('customers'), dbGetAll('suppliers'), dbGetAll('wallets'),
     dbGetAll('expenses'), dbGetAll('sales')
@@ -202,6 +206,12 @@ async function loadAll() {
     ollama: aiDefaultConfig('ollama'),
     lms: aiDefaultConfig('lms')
   }};
+  state.google = googleCfg || {
+    key: 'google',
+    clientId: DEFAULT_GOOGLE_CLIENT_ID,
+    folderName: 'LysiPOS Backups',
+    folderId: null
+  };
   state.users = users;
   state.products = products;
   state.categories = categories;
@@ -216,6 +226,40 @@ async function loadAll() {
 async function saveAI() {
   state.ai.key = 'ai';
   await dbPut('settings', state.ai);
+}
+
+async function saveGoogle() {
+  state.google.key = 'google';
+  await dbPut('settings', state.google);
+}
+
+// Session-scoped token cache. Access tokens expire ~1h; we re-request silently.
+const GOOG_TOK_KEY = 'lysipos:googleToken';
+function readGoogleToken() {
+  try {
+    const j = JSON.parse(sessionStorage.getItem(GOOG_TOK_KEY) || 'null');
+    if (!j) return null;
+    if (Date.now() > (j.expiresAt || 0) - 30_000) return null;
+    return j;
+  } catch { return null; }
+}
+function writeGoogleToken(tok, extra = {}) {
+  const rec = { access_token: tok.access_token, scope: tok.scope, expiresAt: Date.now() + (tok.expires_in || 3600) * 1000, ...extra };
+  sessionStorage.setItem(GOOG_TOK_KEY, JSON.stringify(rec));
+  return rec;
+}
+async function googleGetToken(scopes = [DRIVE_SCOPE, USERINFO_SCOPE], { forceConsent = false } = {}) {
+  const cached = readGoogleToken();
+  if (cached && !forceConsent && scopes.every(s => (cached.scope || '').includes(s))) return cached;
+  const tok = await googleRequestToken(state.google.clientId, scopes, forceConsent ? { prompt: 'consent' } : {});
+  let email = cached?.email || null;
+  try { const info = await googleUserInfo(tok.access_token); email = info.email; } catch {}
+  return writeGoogleToken(tok, { email });
+}
+async function googleSignOut() {
+  const cached = readGoogleToken();
+  if (cached?.access_token) { try { await googleRevokeToken(cached.access_token); } catch {} }
+  sessionStorage.removeItem(GOOG_TOK_KEY);
 }
 
 function canUseAI() {
@@ -2715,9 +2759,14 @@ route('/settings', async () => {
         <div class="row">
           <button class="btn" id="doExport">⤓ Export backup (JSON)</button>
           <label class="btn" style="cursor:pointer">⤒ Import backup<input id="doImport" type="file" accept="application/json" style="display:none"></label>
+          <button class="btn" id="doEmail">📧 Email backup to Gmail</button>
+          <button class="btn" id="doDrive">☁️ Upload to Google Drive</button>
           <button class="btn danger" id="doReset">Reset all data</button>
         </div>
-        <div class="muted" style="margin-top:8px">Import auto-detects both LysiPOS backups and Convex-style POS exports (product categories, suppliers, sales included). Everything lives in your browser (IndexedDB).</div>
+        <div class="muted" style="margin-top:8px">
+          <b>Email backup / Google Drive:</b> on mobile (Android/iOS) both buttons open the OS share sheet with the file already attached — pick Gmail or Drive and you're done. On desktop the app downloads the backup and opens Gmail Compose (or drive.google.com) in a new tab; drag the file into the browser tab to attach/upload — browsers don't allow web pages to attach files directly.
+          <br>Import auto-detects both LysiPOS backups and Convex-style POS exports. Everything lives in your browser (IndexedDB).
+        </div>
       </div>
     </div>
     <div class="card" style="margin-top:14px"><div class="card-h"><h3>AI Assistant</h3><div class="spacer"></div><span class="pill" id="aiStatus">—</span></div>
@@ -2747,6 +2796,28 @@ route('/settings', async () => {
         <div class="muted" style="font-size:12px;margin-top:6px">
           Access: <b>Admins</b> always have access when enabled. <b>Managers</b> only if their user has the <em>AI access</em> flag (Users → Edit). Cashiers never.
           <br>API keys and local URLs stay in this browser's IndexedDB and are <b>not</b> written into JSON backups.
+        </div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:14px"><div class="card-h"><h3>Google integration</h3><div class="spacer"></div><span class="pill" id="gStatus">—</span></div>
+      <div class="card-b">
+        <div class="grid cols-3">
+          <div class="field" style="grid-column:1/-1"><label>OAuth Client ID</label>
+            <input name="gClientId" value="${escapeHtml(state.google?.clientId || '')}" placeholder="12345-abc.apps.googleusercontent.com">
+          </div>
+          <div class="field"><label>Drive folder name</label>
+            <input name="gFolderName" value="${escapeHtml(state.google?.folderName || 'LysiPOS Backups')}">
+          </div>
+          <div class="field" style="grid-column:2/-1"><label>&nbsp;</label>
+            <div class="row" style="gap:6px">
+              <button class="btn" id="gSave" type="button">Save</button>
+              <button class="btn" id="gSignIn" type="button">🔑 Sign in with Google</button>
+              <button class="btn ghost" id="gSignOut" type="button">Sign out</button>
+            </div>
+          </div>
+        </div>
+        <div class="muted" style="font-size:12px;margin-top:6px">
+          When signed in, <b>☁️ Upload to Google Drive</b> above uploads directly to a "<span id="gFolderPreview">${escapeHtml(state.google?.folderName || 'LysiPOS Backups')}</span>" folder in your Drive (no drag-and-drop). Scope: <code>drive.file</code> — the app can only see and manage files it created. Tokens expire in ~1 hour and stay in <code>sessionStorage</code> only (never in a backup).
         </div>
       </div>
     </div>
@@ -2828,6 +2899,92 @@ route('/settings', async () => {
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
       a.download = `lysipos-backup-${dayKey()}.json`; a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    });
+    // Build a fresh backup File + a human-readable summary for share targets.
+    const buildBackupFile = () => {
+      const dump = snapshotData();
+      const json = JSON.stringify(dump, null, 2);
+      const filename = `lysipos-backup-${dayKey()}.json`;
+      const file = new File([json], filename, { type: 'application/json' });
+      const summary = [
+        `Business: ${state.settings.businessName || '—'}`,
+        `Products: ${state.products.length}`,
+        `Sales: ${state.sales.length}`,
+        `Customers: ${state.customers.length}`,
+        `Wallets: ${state.wallets.length}`,
+        `Snapshot taken: ${new Date().toLocaleString()}`
+      ].join('\n');
+      return { file, filename, summary };
+    };
+
+    $('#doEmail', el).addEventListener('click', async () => {
+      const { file, filename, summary } = buildBackupFile();
+      const subject = `${state.settings.businessName || 'LysiPOS'} — backup ${dayKey()}`;
+      const body = `Attached: ${filename}\n\n${summary}\n\nRestore in the app under Settings → Data → Import backup.`;
+      const to = prompt('Send backup to which email?', state.settings.email || 'your.email@gmail.com');
+      if (to === null) return;
+
+      // Path 1: Web Share with a file (mobile Gmail / share sheet)
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({ files: [file], title: subject, text: body });
+          toast('Share sheet opened — pick Gmail to send.', 'good');
+          return;
+        } catch (e) { if (e.name !== 'AbortError') console.warn(e); }
+      }
+
+      // Path 2: Download + open Gmail Compose so the user drags the file on
+      const url = URL.createObjectURL(file);
+      const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      const gmailUrl = 'https://mail.google.com/mail/?view=cm&fs=1'
+        + '&to=' + encodeURIComponent(to || '')
+        + '&su=' + encodeURIComponent(subject)
+        + '&body=' + encodeURIComponent(body);
+      window.open(gmailUrl, '_blank', 'noopener');
+      toast('Backup downloaded. Gmail Compose opened — drag the file onto the message to attach.', 'good');
+    });
+
+    $('#doDrive', el).addEventListener('click', async () => {
+      const { file, filename, summary } = buildBackupFile();
+
+      // Path 1 (preferred): real Drive API upload if we have a Client ID
+      if (state.google?.clientId) {
+        try {
+          toast('Opening Google sign-in…');
+          const tok = await googleGetToken([DRIVE_SCOPE, USERINFO_SCOPE]);
+          // Ensure a folder for tidiness
+          let parentId = state.google.folderId;
+          try {
+            parentId = await ensureFolder(tok.access_token, state.google.folderName || 'LysiPOS Backups');
+            state.google.folderId = parentId; await saveGoogle();
+          } catch (e) { console.warn('Folder create/lookup failed, uploading to root:', e); parentId = null; }
+          const result = await driveUpload(tok.access_token, file, { name: filename, mimeType: 'application/json', parents: parentId ? [parentId] : undefined });
+          toast(`Uploaded to Drive: ${result.name}`, 'good');
+          if (result.webViewLink) window.open(result.webViewLink, '_blank', 'noopener');
+          audit('data.driveUpload', { id: result.id, name: result.name, size: file.size });
+          return;
+        } catch (e) {
+          console.error(e);
+          if (!(await confirmModal('Direct Drive upload failed:\n' + e.message + '\n\nFall back to download + open Drive?', { okText: 'Fallback' }))) return;
+        }
+      }
+
+      // Path 2: Web Share on mobile — user picks Google Drive from the share sheet
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({ files: [file], title: filename, text: summary });
+          toast('Share sheet opened — pick Google Drive to upload.', 'good');
+          return;
+        } catch (e) { if (e.name !== 'AbortError') console.warn(e); }
+      }
+
+      // Path 3: Download the file, then open Drive so the user drops it in
+      const url = URL.createObjectURL(file);
+      const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      window.open('https://drive.google.com/drive/my-drive', '_blank', 'noopener');
+      toast('Backup downloaded. Drive opened — drag the file onto the Drive page to upload.', 'good');
     });
     $('#doImport', el).addEventListener('change', async (e) => {
       const file = e.target.files[0]; if (!file) return;
@@ -2911,6 +3068,43 @@ route('/settings', async () => {
       const r = await aiTest(provider, cfg);
       $('#aiStatus', el).textContent = r.ok ? '● ' + r.info : '✕ ' + r.error;
       toast(r.ok ? r.info : ('Test failed: ' + r.error), r.ok ? 'good' : 'bad');
+    });
+
+    /* ---------- Google integration ---------- */
+    const refreshGoogleStatus = () => {
+      const tok = readGoogleToken();
+      const badge = $('#gStatus', el);
+      if (!badge) return;
+      if (tok?.access_token && tok?.email) badge.textContent = '● Signed in as ' + tok.email;
+      else if (tok?.access_token) badge.textContent = '● Signed in';
+      else badge.textContent = state.google?.clientId ? 'Not signed in' : 'No Client ID';
+    };
+    refreshGoogleStatus();
+    $('[name=gFolderName]', el)?.addEventListener('input', (e) => {
+      const p = $('#gFolderPreview', el); if (p) p.textContent = e.target.value || 'LysiPOS Backups';
+    });
+    $('#gSave', el)?.addEventListener('click', async () => {
+      const newId = $('[name=gClientId]', el).value.trim();
+      const newFolder = $('[name=gFolderName]', el).value.trim() || 'LysiPOS Backups';
+      const changed = newId !== state.google.clientId || newFolder !== state.google.folderName;
+      state.google.clientId = newId;
+      if (newFolder !== state.google.folderName) { state.google.folderName = newFolder; state.google.folderId = null; }
+      await saveGoogle();
+      toast('Google settings saved' + (changed ? ' — sign in again to use the new value.' : ''), 'good');
+      refreshGoogleStatus();
+    });
+    $('#gSignIn', el)?.addEventListener('click', async () => {
+      try {
+        if (!state.google.clientId) return toast('Paste a Client ID and Save first.', 'bad');
+        const tok = await googleGetToken([DRIVE_SCOPE, USERINFO_SCOPE], { forceConsent: true });
+        toast('Signed in as ' + (tok.email || 'Google'), 'good');
+        refreshGoogleStatus();
+      } catch (e) { toast('Sign-in failed: ' + e.message, 'bad'); }
+    });
+    $('#gSignOut', el)?.addEventListener('click', async () => {
+      await googleSignOut();
+      toast('Signed out of Google.', 'good');
+      refreshGoogleStatus();
     });
   });
   return el;

@@ -1,4 +1,4 @@
-const VERSION = 'lysipos-v4';
+const VERSION = 'lysipos-v6';
 const CORE = [
   './',
   './index.html',
@@ -6,6 +6,7 @@ const CORE = [
   './app.js',
   './codes.js',
   './scanner.js',
+  './ai.js',
   './manifest.json',
   './icon.svg',
   './icon-maskable.svg',

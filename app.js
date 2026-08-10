@@ -3,6 +3,7 @@
 
 import { code128BSvg, qrSvg } from './codes.js';
 import { openScanner, isScannerSupported } from './scanner.js';
+import { chatStream, testConnection as aiTest, defaultConfig as aiDefaultConfig, AI_DEFAULTS } from './ai.js';
 
 /* -------------------- console capture (for Dev Console page) -------------------- */
 const LOG_RING = [];
@@ -185,12 +186,18 @@ const DEFAULT_SETTINGS = {
 };
 
 async function loadAll() {
-  const [settings, users, products, categories, customers, suppliers, expenses, sales] = await Promise.all([
+  const [settings, aiCfg, users, products, categories, customers, suppliers, expenses, sales] = await Promise.all([
     dbGet('settings', 'app'),
+    dbGet('settings', 'ai'),
     dbGetAll('users'), dbGetAll('products'), dbGetAll('categories'),
     dbGetAll('customers'), dbGetAll('suppliers'), dbGetAll('expenses'), dbGetAll('sales')
   ]);
   state.settings = settings || DEFAULT_SETTINGS;
+  state.ai = aiCfg || { key: 'ai', enabled: false, provider: 'anthropic', configs: {
+    anthropic: aiDefaultConfig('anthropic'),
+    ollama: aiDefaultConfig('ollama'),
+    lms: aiDefaultConfig('lms')
+  }};
   state.users = users;
   state.products = products;
   state.categories = categories;
@@ -199,6 +206,19 @@ async function loadAll() {
   state.expenses = expenses;
   state.sales = sales;
   document.documentElement.dataset.theme = state.settings.theme || 'dark';
+}
+
+async function saveAI() {
+  state.ai.key = 'ai';
+  await dbPut('settings', state.ai);
+}
+
+function canUseAI() {
+  if (!state.ai?.enabled) return false;
+  if (!state.user) return false;
+  if (state.user.role === 'admin') return true;
+  if (state.user.role === 'manager' && state.user.aiAccess === true) return true;
+  return false;
 }
 
 async function saveSettings() {
@@ -588,6 +608,7 @@ function shell() {
           <div class="pill">${escapeHtml(state.settings?.businessName || 'Business')}</div>
           <div class="pill" id="netStatus">${navigator.onLine ? '● Online' : '● Offline'}</div>
           <div class="spacer"></div>
+          ${canUseAI() ? '<button class="btn small" id="aiBtn" title="Open AI Assistant">✨ Ask AI</button>' : ''}
           <div class="user">
             <div class="avatar">${escapeHtml(initials)}</div>
             <div style="line-height:1.1">
@@ -621,6 +642,7 @@ function wireShell() {
   window.addEventListener('offline', () => $('#netStatus').textContent = '● Offline');
 
   if (deferredPrompt) $('#installBtn').style.display = '';
+  $('#aiBtn')?.addEventListener('click', openAIChat);
   $('#installBtn')?.addEventListener('click', async () => {
     if (!deferredPrompt) return;
     deferredPrompt.prompt();
@@ -1388,45 +1410,211 @@ route('/inventory', async () => {
   return el;
 });
 
-/* Labels — print sheets of product barcodes / QR codes */
+/* Labels — print sheets of product barcodes / QR codes on real paper sizes */
+const PAPER_SIZES = {
+  a4:         { name: 'A4',                 w: 210,   h: 297 },
+  letter:     { name: 'Short bond (Letter)', w: 215.9, h: 279.4 },
+  legal:      { name: 'Long bond (Legal)',   w: 215.9, h: 355.6 }
+};
+
 route('/labels', async () => {
   const el = document.createElement('div');
   el.className = 'page';
   el.innerHTML = html`
-    <h1>Labels</h1><div class="sub">Generate printable sheets of product barcodes or QR codes.</div>
+    <h1>Labels</h1><div class="sub">Generate print-ready sheets of product barcodes or QR codes.</div>
     <div class="card no-print">
-      <div class="card-h">
-        <label style="margin:0 6px 0 0">Type:</label>
-        <select id="lbKind" style="max-width:160px">
+      <div class="card-h" style="flex-wrap:wrap;gap:8px">
+        <label style="margin:0">Type</label>
+        <select id="lbKind" style="max-width:170px">
           <option value="bar">Barcode (Code128)</option>
           <option value="qr">QR (product info)</option>
         </select>
-        <label style="margin:0 6px 0 12px">Columns:</label>
-        <select id="lbCols" style="max-width:100px">
-          <option>2</option><option selected>3</option><option>4</option><option>5</option>
+        <label style="margin:0 0 0 6px">Paper</label>
+        <select id="lbPaper" style="max-width:200px">
+          <option value="a4">A4 (210 × 297 mm)</option>
+          <option value="letter" selected>Short bond / Letter (8.5 × 11 in)</option>
+          <option value="legal">Long bond / Legal (8.5 × 14 in)</option>
         </select>
-        <input id="lbFilter" placeholder="Filter products…" style="max-width:220px;margin-left:12px" />
-        <div class="spacer"></div>
-        <button class="btn small" id="lbAll">Select all filtered</button>
-        <button class="btn small" id="lbNone">Clear</button>
-        <button class="btn primary small" id="lbPrint">🖨 Print</button>
+        <label style="margin:0 0 0 6px">Orient.</label>
+        <select id="lbOrient" style="max-width:130px">
+          <option value="portrait" selected>Portrait</option>
+          <option value="landscape">Landscape</option>
+        </select>
+        <label style="margin:0 0 0 6px">Cols × Rows</label>
+        <select id="lbCols" style="max-width:70px">
+          <option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option>
+        </select>
+        <span>×</span>
+        <select id="lbRows" style="max-width:70px">
+          <option>4</option><option>6</option><option>8</option><option selected>10</option><option>12</option>
+        </select>
+        <label style="margin:0 0 0 6px">Margin</label>
+        <select id="lbMargin" style="max-width:90px">
+          <option value="5">5 mm</option>
+          <option value="8" selected>8 mm</option>
+          <option value="10">10 mm</option>
+          <option value="15">15 mm</option>
+        </select>
       </div>
-      <div class="card-b" style="max-height:280px;overflow:auto">
-        <table class="data">
-          <thead><tr><th style="width:32px"></th><th>Name</th><th>SKU</th><th>Barcode</th><th class="right">Qty</th></tr></thead>
-          <tbody id="lbList"></tbody>
-        </table>
+      <div class="card-b" style="border-top:1px solid var(--border);padding-top:10px">
+        <div class="row" style="gap:8px">
+          <input id="lbFilter" placeholder="Filter products…" style="max-width:260px" />
+          <button class="btn small" id="lbAll">Select all filtered</button>
+          <button class="btn small" id="lbNone">Clear</button>
+          <div class="spacer"></div>
+          <span class="pill" id="lbCount">0 labels · 0 pages</span>
+          <button class="btn primary small" id="lbPrint">🖨 Print</button>
+        </div>
+        <div style="max-height:220px;overflow:auto;margin-top:10px">
+          <table class="data">
+            <thead><tr><th style="width:32px"></th><th>Name</th><th>SKU</th><th>Barcode</th><th class="right">Qty</th></tr></thead>
+            <tbody id="lbList"></tbody>
+          </table>
+        </div>
       </div>
     </div>
-    <div class="card" style="margin-top:14px">
-      <div class="card-h no-print"><h3>Preview</h3><div class="spacer"></div><span class="pill" id="lbCount">0 labels</span></div>
-      <div class="card-b" style="background:#fff;color:#000;padding:12px">
-        <div id="lbSheet" style="display:grid;gap:8px"></div>
-      </div>
-    </div>`;
+
+    <div class="card no-print" style="margin-top:14px">
+      <div class="card-h"><h3>Preview</h3><div class="spacer"></div><span class="muted" id="lbPageInfo">—</span></div>
+      <div class="card-b" style="background:#e5e7eb;padding:16px;display:flex;flex-direction:column;gap:16px;align-items:center" id="lbPreview"></div>
+    </div>
+
+    <div id="lbPrintArea" class="print-only"></div>
+    <style id="lbStyle"></style>`;
 
   // In-memory selection: pid -> qty
   const selection = new Map();
+  const readCfg = () => ({
+    kind: $('#lbKind', el).value,
+    paper: PAPER_SIZES[$('#lbPaper', el).value] || PAPER_SIZES.letter,
+    paperKey: $('#lbPaper', el).value,
+    orient: $('#lbOrient', el).value,
+    cols: Math.max(1, Number($('#lbCols', el).value) || 3),
+    rows: Math.max(1, Number($('#lbRows', el).value) || 10),
+    marginMm: Math.max(0, Number($('#lbMargin', el).value) || 8)
+  });
+
+  const buildLabels = () => {
+    const items = [];
+    for (const [pid, qty] of selection.entries()) {
+      const p = state.products.find(x => x.id === pid); if (!p) continue;
+      for (let i = 0; i < qty; i++) items.push(p);
+    }
+    return items;
+  };
+
+  const labelHtml = (p, kind) => {
+    let svg = '';
+    try {
+      if (kind === 'qr') {
+        const payload = JSON.stringify({ name: p.name, sku: p.sku, barcode: p.barcode, price: p.price });
+        svg = qrSvg(payload, { scale: 3, margin: 2 });
+      } else {
+        const val = p.barcode || p.sku || p.name;
+        svg = code128BSvg(val, { moduleWidth: 1.8, height: 44, paddingH: 6, paddingV: 4 });
+      }
+    } catch (e) { svg = `<div style="color:#c00;font-size:10px">${escapeHtml(e.message)}</div>`; }
+    return `<div class="lb-cell">
+      <div class="lb-name">${escapeHtml(p.name)}</div>
+      <div class="lb-code">${svg}</div>
+      <div class="lb-price">${escapeHtml(state.settings.currency)} ${Number(p.price || 0).toFixed(2)} · ${escapeHtml(p.sku || '')}</div>
+    </div>`;
+  };
+
+  const updateStyle = () => {
+    const c = readCfg();
+    const pageW = c.orient === 'portrait' ? c.paper.w : c.paper.h;
+    const pageH = c.orient === 'portrait' ? c.paper.h : c.paper.w;
+    const contentW = pageW - c.marginMm * 2;
+    const contentH = pageH - c.marginMm * 2;
+    const cellW = contentW / c.cols;
+    const cellH = contentH / c.rows;
+    // On-screen preview scales mm to px roughly 3.2 (fits a laptop screen)
+    const previewScale = 3.2;
+    $('#lbStyle', el).textContent = `
+      /* On-screen page previews */
+      #lbPreview .lb-page {
+        width: ${pageW * previewScale}px;
+        height: ${pageH * previewScale}px;
+        background: #fff;
+        box-shadow: 0 4px 18px rgba(0,0,0,.15);
+        padding: ${c.marginMm * previewScale}px;
+        box-sizing: border-box;
+        display: grid;
+        grid-template-columns: repeat(${c.cols}, 1fr);
+        grid-template-rows: repeat(${c.rows}, 1fr);
+        color: #000;
+        page-break-after: always;
+      }
+      #lbPreview .lb-page.empty { display: grid; place-items: center; color: #94a3b8; font-family: system-ui; }
+      #lbPreview .lb-cell,
+      #lbPrintArea .lb-cell {
+        border: 1px dashed #d1d5db;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        overflow: hidden; padding: 2mm; box-sizing: border-box; text-align: center;
+      }
+      #lbPreview .lb-cell .lb-name, #lbPrintArea .lb-cell .lb-name { font: 600 8pt system-ui; margin-bottom: 1mm; line-height: 1.1; max-height: 3.2em; overflow: hidden; }
+      #lbPreview .lb-cell .lb-price, #lbPrintArea .lb-cell .lb-price { font: 7pt ui-monospace,monospace; color: #333; margin-top: 1mm; }
+      #lbPreview .lb-cell .lb-code svg, #lbPrintArea .lb-cell .lb-code svg { max-width: 100%; max-height: ${(cellH * 0.65).toFixed(1)}mm; }
+      #lbPreview .lb-cell .lb-code, #lbPrintArea .lb-cell .lb-code { display: grid; place-items: center; width: 100%; }
+
+      /* Print area */
+      #lbPrintArea { display: none; }
+      @media print {
+        @page { size: ${c.paperKey === 'a4' ? 'A4' : c.paperKey === 'legal' ? 'legal' : 'letter'} ${c.orient}; margin: ${c.marginMm}mm; }
+        body { background: #fff !important; }
+        .sidebar, .topbar, .modal-back, #toast, .no-print, .scrim { display: none !important; }
+        .layout { display: block !important; }
+        .main, #view, .page { padding: 0 !important; margin: 0 !important; }
+        #lbPrintArea { display: block; }
+        #lbPrintArea .lb-page {
+          width: ${contentW}mm;
+          height: ${contentH}mm;
+          display: grid;
+          grid-template-columns: repeat(${c.cols}, 1fr);
+          grid-template-rows: repeat(${c.rows}, 1fr);
+          page-break-after: always;
+          color: #000;
+        }
+        #lbPrintArea .lb-page:last-child { page-break-after: auto; }
+      }
+    `;
+  };
+
+  const renderSheet = () => {
+    updateStyle();
+    const c = readCfg();
+    const perPage = c.cols * c.rows;
+    const items = buildLabels();
+    const pageCount = Math.max(1, Math.ceil(items.length / perPage));
+
+    // Build one .lb-page div per page for on-screen preview and print
+    const pageDivs = (target) => {
+      target.innerHTML = '';
+      if (!items.length) {
+        const p = document.createElement('div'); p.className = 'lb-page empty';
+        p.textContent = 'Select products above to fill the sheet.';
+        target.appendChild(p);
+        return;
+      }
+      for (let pi = 0; pi < pageCount; pi++) {
+        const p = document.createElement('div'); p.className = 'lb-page';
+        const slice = items.slice(pi * perPage, (pi + 1) * perPage);
+        p.innerHTML = slice.map(x => labelHtml(x, c.kind)).join('') +
+          Array.from({ length: perPage - slice.length }, () => '<div class="lb-cell" style="border-style:dotted;opacity:.35"></div>').join('');
+        target.appendChild(p);
+      }
+    };
+    pageDivs($('#lbPreview', el));
+    pageDivs($('#lbPrintArea', el));
+
+    $('#lbCount', el).textContent = `${items.length} label${items.length === 1 ? '' : 's'} · ${pageCount} page${pageCount === 1 ? '' : 's'}`;
+    const pageWmm = c.orient === 'portrait' ? c.paper.w : c.paper.h;
+    const pageHmm = c.orient === 'portrait' ? c.paper.h : c.paper.w;
+    const cellWmm = (pageWmm - c.marginMm * 2) / c.cols;
+    const cellHmm = (pageHmm - c.marginMm * 2) / c.rows;
+    $('#lbPageInfo', el).textContent = `${c.paper.name} ${c.orient} · ${c.cols}×${c.rows} per page · label ≈ ${cellWmm.toFixed(1)}×${cellHmm.toFixed(1)} mm`;
+  };
 
   const rebuildList = () => {
     const term = ($('#lbFilter', el).value || '').trim().toLowerCase();
@@ -1441,54 +1629,22 @@ route('/labels', async () => {
         <td class="mono">${escapeHtml(p.barcode || '')}</td>
         <td class="right"><input type="number" min="1" max="99" value="${selection.get(p.id) || 1}" style="width:64px;text-align:right" data-qty></td>
       </tr>`).join('') || `<tr><td colspan="5"><div class="empty">No matching products</div></td></tr>`;
-    el.querySelectorAll('[data-sel]').forEach(cb => cb.addEventListener('change', (e) => {
-      const id = e.target.closest('tr').dataset.id;
-      const qty = Number(e.target.closest('tr').querySelector('[data-qty]').value) || 1;
+    el.querySelectorAll('#lbList [data-sel]').forEach(cb => cb.addEventListener('change', (e) => {
+      const tr = e.target.closest('tr'); const id = tr.dataset.id;
+      const qty = Math.max(1, Number(tr.querySelector('[data-qty]').value) || 1);
       if (e.target.checked) selection.set(id, qty); else selection.delete(id);
       renderSheet();
     }));
-    el.querySelectorAll('[data-qty]').forEach(inp => inp.addEventListener('input', (e) => {
+    el.querySelectorAll('#lbList [data-qty]').forEach(inp => inp.addEventListener('input', (e) => {
       const id = e.target.closest('tr').dataset.id;
       if (selection.has(id)) { selection.set(id, Math.max(1, Number(e.target.value) || 1)); renderSheet(); }
     }));
   };
 
-  const renderSheet = () => {
-    const kind = $('#lbKind', el).value;
-    const cols = Number($('#lbCols', el).value) || 3;
-    const sheet = $('#lbSheet', el);
-    sheet.style.gridTemplateColumns = `repeat(${cols}, minmax(0,1fr))`;
-    let n = 0;
-    let html2 = '';
-    for (const [pid, qty] of selection.entries()) {
-      const p = state.products.find(x => x.id === pid); if (!p) continue;
-      for (let i = 0; i < qty; i++) {
-        n++;
-        let svg = '';
-        try {
-          if (kind === 'qr') {
-            const payload = JSON.stringify({ name: p.name, sku: p.sku, barcode: p.barcode, price: p.price });
-            svg = qrSvg(payload, { scale: 4, margin: 2 });
-          } else {
-            const val = p.barcode || p.sku || p.name;
-            svg = code128BSvg(val, { moduleWidth: 2, height: 50 });
-          }
-        } catch (e) { svg = `<div style="color:#c00">${escapeHtml(e.message)}</div>`; }
-        html2 += `<div style="border:1px dashed #ccc;border-radius:8px;padding:8px;text-align:center;background:#fff">
-          <div style="font-size:11px;font-weight:600;margin-bottom:4px;color:#000">${escapeHtml(p.name)}</div>
-          <div style="display:grid;place-items:center">${svg}</div>
-          <div style="font-size:10px;color:#333;margin-top:2px">${escapeHtml(state.settings.currency)} ${Number(p.price || 0).toFixed(2)}</div>
-        </div>`;
-      }
-    }
-    sheet.innerHTML = html2 || '<div class="muted" style="grid-column:1/-1;text-align:center;padding:40px">Select products above.</div>';
-    $('#lbCount', el).textContent = `${n} label${n === 1 ? '' : 's'}`;
-  };
-
   queueMicrotask(() => {
+    ['lbKind','lbPaper','lbOrient','lbCols','lbRows','lbMargin'].forEach(id =>
+      $('#' + id, el).addEventListener('change', renderSheet));
     $('#lbFilter', el).addEventListener('input', rebuildList);
-    $('#lbKind', el).addEventListener('change', renderSheet);
-    $('#lbCols', el).addEventListener('change', renderSheet);
     $('#lbAll', el).addEventListener('click', () => {
       el.querySelectorAll('#lbList tr').forEach(tr => {
         const id = tr.dataset.id;
@@ -1939,6 +2095,9 @@ route('/users', async () => {
         <div class="field"><label>Active</label>
           <select name="active"><option value="1" ${existing?.active !== false ? 'selected' : ''}>Yes</option><option value="0" ${existing?.active === false ? 'selected' : ''}>No</option></select>
         </div>
+        <div class="field"><label>AI Assistant access <span class="muted" style="font-weight:400">(managers only)</span></label>
+          <select name="aiAccess"><option value="0" ${!existing?.aiAccess ? 'selected' : ''}>No</option><option value="1" ${existing?.aiAccess ? 'selected' : ''}>Yes</option></select>
+        </div>
         <div class="field" style="grid-column:1/-1"><label>${existing ? 'New password (leave blank to keep)' : 'Password'}</label><input name="password" type="password" /></div>
       </div>`;
     const foot = document.createElement('div');
@@ -1950,6 +2109,7 @@ route('/users', async () => {
       if (!d.name?.trim() || !d.email?.trim()) return toast('Name and email required', 'bad');
       const rec = existing ? { ...existing } : { id: uid('u_'), createdAt: nowISO() };
       rec.name = d.name.trim(); rec.email = d.email.trim(); rec.role = d.role; rec.active = d.active === '1';
+      rec.aiAccess = d.aiAccess === '1';
       if (d.password) rec.passHash = await sha256(d.password);
       if (!rec.passHash) return toast('Password required', 'bad');
       await dbPut('users', rec);
@@ -2027,6 +2187,36 @@ route('/settings', async () => {
           <button class="btn danger" id="doReset">Reset all data</button>
         </div>
         <div class="muted" style="margin-top:8px">Import auto-detects both LysiPOS backups and Convex-style POS exports (product categories, suppliers, sales included). Everything lives in your browser (IndexedDB).</div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:14px"><div class="card-h"><h3>AI Assistant</h3><div class="spacer"></div><span class="pill" id="aiStatus">—</span></div>
+      <div class="card-b">
+        <div class="grid cols-3">
+          <div class="field"><label>Enable AI Assistant</label>
+            <select name="aiEnabled">
+              <option value="0" ${!state.ai?.enabled ? 'selected' : ''}>Off</option>
+              <option value="1" ${state.ai?.enabled ? 'selected' : ''}>On</option>
+            </select>
+          </div>
+          <div class="field"><label>Provider</label>
+            <select name="aiProvider">
+              <option value="anthropic" ${state.ai?.provider === 'anthropic' ? 'selected' : ''}>Anthropic (cloud)</option>
+              <option value="ollama" ${state.ai?.provider === 'ollama' ? 'selected' : ''}>Ollama (local)</option>
+              <option value="lms" ${state.ai?.provider === 'lms' ? 'selected' : ''}>LM Studio (local)</option>
+            </select>
+          </div>
+          <div class="field"><label>&nbsp;</label>
+            <div class="row" style="gap:6px">
+              <button class="btn" id="aiTest" type="button">Test connection</button>
+              <button class="btn primary" id="aiSaveCfg" type="button">Save AI settings</button>
+            </div>
+          </div>
+        </div>
+        <div id="aiProviderCfg"></div>
+        <div class="muted" style="font-size:12px;margin-top:6px">
+          Access: <b>Admins</b> always have access when enabled. <b>Managers</b> only if their user has the <em>AI access</em> flag (Users → Edit). Cashiers never.
+          <br>API keys and local URLs stay in this browser's IndexedDB and are <b>not</b> written into JSON backups.
+        </div>
       </div>
     </div>
     <div class="card" style="margin-top:14px"><div class="card-h"><h3>Auto-backup</h3><div class="spacer"></div><span class="pill" id="abLast">${s.lastAutoBackupAt ? 'Last: ' + fmtDate(s.lastAutoBackupAt) : 'Never run'}</span></div>
@@ -2139,6 +2329,58 @@ route('/settings', async () => {
       refreshBackupsTable();
     });
     refreshBackupsTable();
+
+    /* ---------- AI section ---------- */
+    const renderAIProviderCfg = () => {
+      const provider = $('[name=aiProvider]', el).value;
+      const cfg = state.ai.configs?.[provider] || aiDefaultConfig(provider);
+      const hostHint = {
+        anthropic: 'https://api.anthropic.com',
+        ollama: 'http://localhost:11434 — enable CORS by setting env <code>OLLAMA_ORIGINS=' + location.origin + '</code> before starting Ollama',
+        lms: 'http://localhost:1234/v1 — in LM Studio, enable "Serve on network" and "Enable CORS" in the Developer tab'
+      }[provider];
+      $('#aiProviderCfg', el).innerHTML = html`
+        <div class="grid cols-3" style="margin-top:8px">
+          <div class="field"><label>Base URL</label><input name="aiBaseUrl" value="${escapeHtml(cfg.baseUrl || '')}"></div>
+          <div class="field"><label>Model</label><input name="aiModel" value="${escapeHtml(cfg.model || '')}"></div>
+          <div class="field"><label>${provider === 'anthropic' ? 'API key' : 'API key (optional)'}</label><input name="aiApiKey" type="password" value="${escapeHtml(cfg.apiKey || '')}"></div>
+          <div class="field"><label>Max tokens</label><input name="aiMaxTokens" type="number" min="16" max="8192" value="${cfg.maxTokens || 1024}"></div>
+          <div class="field"><label>Temperature</label><input name="aiTemperature" type="number" step="0.05" min="0" max="2" value="${cfg.temperature ?? 0.4}"></div>
+        </div>
+        <div class="muted" style="font-size:11px;margin-top:4px">Hint: ${hostHint}${provider === 'anthropic' ? '. Browser sends <code>anthropic-dangerous-direct-browser-access: true</code>; your API key is stored locally and travels with your browser only.' : ''}</div>
+      `;
+      $('#aiStatus', el).textContent = state.ai.enabled ? (provider + ' · ' + (cfg.model || '?')) : 'Off';
+    };
+    const collectProviderCfg = () => {
+      const provider = $('[name=aiProvider]', el).value;
+      const cfg = {
+        baseUrl: $('[name=aiBaseUrl]', el).value.trim() || AI_DEFAULTS[provider].baseUrl,
+        model: $('[name=aiModel]', el).value.trim() || AI_DEFAULTS[provider].model,
+        apiKey: $('[name=aiApiKey]', el).value,
+        maxTokens: Math.max(16, Number($('[name=aiMaxTokens]', el).value) || 1024),
+        temperature: Math.max(0, Math.min(2, Number($('[name=aiTemperature]', el).value) || 0.4))
+      };
+      return { provider, cfg };
+    };
+    $('[name=aiProvider]', el).addEventListener('change', renderAIProviderCfg);
+    renderAIProviderCfg();
+    $('#aiSaveCfg', el).addEventListener('click', async () => {
+      const { provider, cfg } = collectProviderCfg();
+      state.ai.enabled = $('[name=aiEnabled]', el).value === '1';
+      state.ai.provider = provider;
+      state.ai.configs = state.ai.configs || {};
+      state.ai.configs[provider] = cfg;
+      await saveAI();
+      toast('AI settings saved', 'good');
+      render(); // refresh shell so the ✨ Ask AI button appears/disappears
+    });
+    $('#aiTest', el).addEventListener('click', async () => {
+      const { provider, cfg } = collectProviderCfg();
+      $('#aiStatus', el).textContent = 'Testing…';
+      const r = await aiTest(provider, cfg);
+      $('#aiStatus', el).textContent = r.ok ? '● ' + r.info : '✕ ' + r.error;
+      toast(r.ok ? r.info : ('Test failed: ' + r.error), r.ok ? 'good' : 'bad');
+    });
   });
   return el;
 });
@@ -2407,6 +2649,222 @@ route('/dev', async () => {
 
   return el;
 });
+
+/* -------------------- AI Assistant -------------------- */
+
+// Build a compact JSON-ish context for the model. Kept small so it fits in
+// modest local models too (bounded lists).
+function buildAIContext(depth = 'summary') {
+  const s = state.settings;
+  const now = new Date();
+  const cutoff = new Date(now.getTime() - 30 * 864e5);
+  const salesRecent = state.sales.filter(x => new Date(x.createdAt) >= cutoff);
+
+  const byDay = {};
+  for (const sl of salesRecent) {
+    const k = dayKey(sl.createdAt);
+    byDay[k] = (byDay[k] || 0) + sl.total;
+  }
+  const byCat = {}, byCashier = {}, prodQty = {};
+  for (const sl of salesRecent) {
+    byCashier[sl.cashier?.name || '—'] = (byCashier[sl.cashier?.name || '—'] || 0) + sl.total;
+    for (const li of sl.items) {
+      const p = state.products.find(x => x.id === li.productId);
+      const cat = state.categories.find(c => c.id === p?.category)?.name || 'Uncategorized';
+      byCat[cat] = (byCat[cat] || 0) + li.price * li.qty;
+      prodQty[li.productId] = (prodQty[li.productId] || 0) + li.qty;
+    }
+  }
+  const top = Object.entries(prodQty).sort((a,b) => b[1]-a[1]).slice(0, 15)
+    .map(([pid, q]) => ({ product: state.products.find(p => p.id === pid)?.name || pid, qty: q }));
+
+  const cap = depth === 'full' ? 300 : 120;
+  const products = state.products
+    .filter(p => p.active !== false)
+    .slice(0, cap)
+    .map(p => ({
+      name: p.name, sku: p.sku, stock: p.stock ?? 0, price: p.price, cost: p.cost,
+      category: state.categories.find(c => c.id === p.category)?.name || '',
+      supplier: state.suppliers.find(x => x.id === p.supplierId)?.name || ''
+    }));
+  const lowStock = state.products
+    .filter(p => p.active !== false && (p.stock ?? 0) <= (p.lowStockThreshold ?? 5))
+    .slice(0, 40)
+    .map(p => ({ name: p.name, sku: p.sku, stock: p.stock ?? 0 }));
+
+  const expensesRecent = state.expenses
+    .filter(e => new Date(e.date || e.createdAt || 0) >= cutoff);
+  const expTotal = expensesRecent.reduce((n, e) => n + Number(e.amount || 0), 0);
+  const expByCat = {};
+  for (const e of expensesRecent) expByCat[e.category || 'General'] = (expByCat[e.category || 'General'] || 0) + Number(e.amount || 0);
+
+  return {
+    business: { name: s.businessName, currency: s.currency, taxRate: s.taxRate, taxInclusive: !!s.taxInclusive },
+    today: dayKey(now),
+    counts: {
+      products: state.products.length,
+      customers: state.customers.length,
+      suppliers: state.suppliers.length,
+      sales_30d: salesRecent.length,
+      expenses_30d: expensesRecent.length
+    },
+    revenue_30d: { total: Object.values(byDay).reduce((a,b) => a+b, 0), by_day: byDay },
+    top_products_30d: top,
+    revenue_by_category_30d: byCat,
+    revenue_by_cashier_30d: byCashier,
+    expenses_30d: { total: expTotal, by_category: expByCat },
+    low_stock: lowStock,
+    products
+  };
+}
+
+// Fetch and compress the user manual into a plaintext outline + first paragraphs.
+let _manualCache = null;
+async function loadManualDigest() {
+  if (_manualCache) return _manualCache;
+  try {
+    const r = await fetch('manual.html');
+    const html = await r.text();
+    // Strip tags but keep some structure
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const parts = [];
+    doc.querySelectorAll('h2, h3').forEach(h => parts.push('\n## ' + h.textContent.trim()));
+    // Include the first paragraph of each H2 section
+    doc.querySelectorAll('h2').forEach(h => {
+      let n = h.nextElementSibling;
+      let count = 0;
+      while (n && n.tagName !== 'H2' && count < 3) {
+        if (n.tagName === 'P' || n.tagName === 'UL' || n.tagName === 'OL') {
+          parts.push(n.textContent.trim().replace(/\s+/g, ' '));
+          count++;
+        }
+        n = n.nextElementSibling;
+      }
+    });
+    _manualCache = parts.join('\n').slice(0, 6000); // cap at ~6KB
+  } catch { _manualCache = '(manual unavailable)'; }
+  return _manualCache;
+}
+
+async function buildAISystemPrompt() {
+  const ctx = buildAIContext();
+  const manual = await loadManualDigest();
+  return [
+    `You are LysiPOS Assistant, embedded in a Point-of-Sale + CRM + SaaS app used by a small business.`,
+    `You help the operator understand their store, spot problems, and use the app.`,
+    ``,
+    `Rules:`,
+    `- Ground every answer in the JSON context and manual excerpts below. Do not invent products, customers, sales, or app features.`,
+    `- Prefer short, structured answers (bullets, tables) over prose.`,
+    `- All amounts are in ${ctx.business.currency}. Today's date is ${ctx.today}.`,
+    `- When suggesting actions ("restock these", "raise price on X"), reference the specific product name and current numbers.`,
+    `- If a question requires data not in the context, say so and suggest which page in the app has it.`,
+    `- Never ask the user for their password or API keys.`,
+    ``,
+    `=== STORE DATA (last 30 days unless noted) ===`,
+    JSON.stringify(ctx),
+    ``,
+    `=== USER MANUAL OUTLINE ===`,
+    manual
+  ].join('\n');
+}
+
+function openAIChat() {
+  if (!canUseAI()) { toast('AI Assistant is not enabled for your account.', 'warn'); return; }
+  const provider = state.ai.provider;
+  const cfg = state.ai.configs?.[provider] || aiDefaultConfig(provider);
+  const providerName = { anthropic: 'Anthropic', ollama: 'Ollama', lms: 'LM Studio' }[provider];
+
+  const body = document.createElement('div');
+  body.style.display = 'flex';
+  body.style.flexDirection = 'column';
+  body.style.gap = '10px';
+  body.style.minHeight = '360px';
+  body.innerHTML = html`
+    <div id="aiChat" style="flex:1;min-height:280px;max-height:52vh;overflow:auto;padding:6px 2px;display:flex;flex-direction:column;gap:10px"></div>
+    <div id="aiChips" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+    <div style="display:flex;gap:6px">
+      <textarea id="aiInput" rows="2" placeholder="Ask about products, sales, expenses, or how to use the app…" style="flex:1;resize:vertical"></textarea>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <button class="btn primary" id="aiSend">Send</button>
+        <button class="btn ghost" id="aiStop" disabled>Stop</button>
+      </div>
+    </div>
+    <div class="muted" style="font-size:11px">Model: <b>${escapeHtml(cfg.model || '?')}</b> · Provider: ${escapeHtml(providerName)} — answers depend on the connected model.</div>
+  `;
+
+  const m = openModal({
+    title: '✨ AI Assistant',
+    body,
+    footer: '<button class="btn ghost" data-close2>Close</button><button class="btn small" data-clearchat>Clear chat</button>',
+    size: 'lg'
+  });
+  m.footEl.querySelector('[data-close2]').addEventListener('click', m.close);
+  m.footEl.querySelector('[data-clearchat]').addEventListener('click', () => { messages = []; render(); });
+
+  let messages = [];
+  let abortCtl = null;
+
+  const render = () => {
+    const box = $('#aiChat', body);
+    box.innerHTML = messages.map(msg => `
+      <div style="display:flex;gap:8px;${msg.role === 'user' ? 'justify-content:flex-end' : ''}">
+        <div style="max-width:85%;padding:8px 12px;border-radius:12px;background:${msg.role === 'user' ? 'var(--panel-3)' : 'var(--panel-2)'};border:1px solid var(--border);white-space:pre-wrap;word-break:break-word">${escapeHtml(msg.content)}${msg.streaming ? '<span class="muted"> ▍</span>' : ''}</div>
+      </div>`).join('') || '<div class="empty" style="padding:20px"><div class="icn">✨</div>Ask about your store, sales, expenses, or how to use LysiPOS.</div>';
+    box.scrollTop = box.scrollHeight;
+  };
+
+  const suggestions = [
+    'Which products should I restock this week?',
+    'How did sales go in the last 7 days? Any trends?',
+    'What are my top 5 products by revenue?',
+    'Where is my money going — summarize my expenses.',
+    'Which cashier had the best week?',
+    'Explain how tax-inclusive pricing works in the settings.'
+  ];
+  const renderChips = () => {
+    $('#aiChips', body).innerHTML = suggestions.map(s => `<button class="btn small ghost" data-sug="${escapeHtml(s)}">${escapeHtml(s)}</button>`).join('');
+    body.querySelectorAll('[data-sug]').forEach(b => b.addEventListener('click', () => { $('#aiInput', body).value = b.dataset.sug; send(); }));
+  };
+  renderChips();
+  render();
+
+  const send = async () => {
+    const text = $('#aiInput', body).value.trim();
+    if (!text) return;
+    $('#aiInput', body).value = '';
+    messages.push({ role: 'user', content: text });
+    const assistant = { role: 'assistant', content: '', streaming: true };
+    messages.push(assistant);
+    render();
+    $('#aiSend', body).disabled = true;
+    $('#aiStop', body).disabled = false;
+    abortCtl = new AbortController();
+    try {
+      const sys = await buildAISystemPrompt();
+      const sendable = messages.filter(m => !m.streaming).map(m => ({ role: m.role, content: m.content }));
+      for await (const chunk of chatStream(provider, cfg, sys, sendable, abortCtl.signal)) {
+        assistant.content += chunk;
+        render();
+      }
+    } catch (e) {
+      if (e.message !== 'aborted') assistant.content += `\n\n[error] ${e.message}\n\n(Common causes: CORS not allowed on the local server, invalid API key, or model not loaded. Check Settings → AI Assistant → Test.)`;
+    } finally {
+      assistant.streaming = false;
+      $('#aiSend', body).disabled = false;
+      $('#aiStop', body).disabled = true;
+      abortCtl = null;
+      render();
+    }
+  };
+
+  $('#aiSend', body).addEventListener('click', send);
+  $('#aiStop', body).addEventListener('click', () => { abortCtl?.abort(); });
+  $('#aiInput', body).addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  setTimeout(() => $('#aiInput', body)?.focus(), 50);
+}
 
 /* -------------------- PWA install prompt -------------------- */
 let deferredPrompt = null;

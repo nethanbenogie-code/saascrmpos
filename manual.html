@@ -86,8 +86,9 @@
     <a href="#backup">15. Backup, restore &amp; reset</a>
     <a href="#offline">16. Offline &amp; data safety</a>
     <a href="#shortcuts">17. Keyboard &amp; barcode tips</a>
-    <a href="#dev">18. Dev Console (admin)</a>
-    <a href="#faq">19. FAQ &amp; troubleshooting</a>
+    <a href="#ai">18. AI Assistant</a>
+    <a href="#dev">19. Dev Console (admin)</a>
+    <a href="#faq">20. FAQ &amp; troubleshooting</a>
   </nav>
 
   <main>
@@ -212,13 +213,16 @@
     </ol>
 
     <h3>Print a sheet of labels</h3>
-    <p>Open <strong>Labels</strong> from the sidebar.</p>
+    <p>Open <strong>Labels</strong> from the sidebar. The page is a paper-accurate designer:</p>
     <ol>
       <li>Filter and check the products you want, and set a quantity per product.</li>
-      <li>Pick <em>Type</em> (Barcode or QR) and <em>Columns</em> (2–5 per row).</li>
-      <li>The preview builds a printable sheet with product name, code, and price on each label.</li>
-      <li>Click <strong>🖨 Print</strong> — the toolbar, sidebar and top bar are hidden by print CSS so only the sheet prints.</li>
+      <li>Pick <em>Type</em> (Barcode or QR).</li>
+      <li>Pick <em>Paper</em> — <strong>A4</strong> (210 × 297 mm), <strong>Short bond / Letter</strong> (8.5 × 11 in), or <strong>Long bond / Legal</strong> (8.5 × 14 in) — and <em>Orientation</em> (Portrait or Landscape).</li>
+      <li>Choose <em>Cols × Rows</em> per page (from 2×4 up to 6×12) and <em>Margin</em> (5, 8, 10 or 15 mm). The header shows the resulting cell size in millimeters so you can match a specific label sheet.</li>
+      <li>The preview renders each printable page at real proportions, with page breaks shown between them. Empty cells on the last page appear faintly outlined.</li>
+      <li>Click <strong>🖨 Print</strong> — the app injects a matching <code>@page size</code> rule so the printer uses the exact paper size and orientation you chose. The sidebar, top bar, and configuration panels are hidden by print CSS so only the label pages print.</li>
     </ol>
+    <div class="note">In the browser's print dialog, make sure "Scale" is set to 100% and any "Fit to page" option is off, or the label dimensions will drift from the mm values shown in the header.</div>
 
     <h3>Scanning barcodes and QR with the camera</h3>
     <p>The <strong>📷 Scan</strong> button on the POS opens the camera scanner using your browser's native <code>BarcodeDetector</code>:</p>
@@ -316,7 +320,53 @@
       <li>The sidebar has a theme toggle (🌓) for switching between dark and light.</li>
     </ul>
 
-    <h2 id="dev">18. Dev Console <span class="tag">(Admin)</span></h2>
+    <h2 id="ai">18. AI Assistant</h2>
+    <p>LysiPOS ships with an optional chat assistant that can read your store data and this manual, then answer questions or make suggestions ("what should I restock", "how were sales last week", "explain tax-inclusive pricing"). It's <strong>off by default</strong>.</p>
+
+    <h3>Enable it (Admin)</h3>
+    <ol>
+      <li>Go to <em>Settings → AI Assistant</em>.</li>
+      <li>Flip <strong>Enable AI Assistant</strong> to <em>On</em>.</li>
+      <li>Pick a <strong>Provider</strong>:
+        <ul>
+          <li><strong>Anthropic (cloud)</strong> — needs an API key from console.anthropic.com. Best quality, uses your internet + your quota.</li>
+          <li><strong>Ollama (local)</strong> — runs entirely on your computer, no data leaves the machine. Install from <code>ollama.ai</code>, then <code>ollama pull llama3.2</code> (or any model of your choice).</li>
+          <li><strong>LM Studio (local)</strong> — runs the "Local server" feature of LM Studio (default port 1234). Any GGUF model you've loaded works.</li>
+        </ul>
+      </li>
+      <li>Fill in the <em>Base URL</em>, <em>Model</em>, and <em>API key</em> (if any).</li>
+      <li>Click <strong>Test connection</strong>. Fix any errors before saving.</li>
+      <li>Click <strong>Save AI settings</strong>. A <strong>✨ Ask AI</strong> button now appears in the top bar for permitted users.</li>
+    </ol>
+
+    <h3>Who can use it</h3>
+    <ul>
+      <li><strong>Admins</strong> always have access when AI is enabled.</li>
+      <li><strong>Managers</strong> only if the <em>AI Assistant access</em> flag is set on their user (Users → Edit).</li>
+      <li><strong>Cashiers</strong> never.</li>
+    </ul>
+
+    <h3>What it can see</h3>
+    <p>Each request bundles a compact snapshot of your store as context:</p>
+    <ul>
+      <li>Business name, currency, tax settings, today's date.</li>
+      <li>Up to 120 active products (name, SKU, stock, price, cost, category, supplier) and every low-stock item.</li>
+      <li>Last-30-day sales: totals, per day, top products, revenue by category, revenue by cashier.</li>
+      <li>Last-30-day expenses total and breakdown by category.</li>
+      <li>An outline of this manual so it can answer "how do I…" questions.</li>
+    </ul>
+    <div class="warn">Anthropic mode sends this data to Anthropic's API. Ollama and LM Studio keep everything on your local machine. Choose the provider that matches your data-handling requirements.</div>
+
+    <h3>CORS notes for local providers</h3>
+    <ul>
+      <li><strong>Ollama</strong>: browsers block cross-origin requests by default. Before launching Ollama, set the environment variable <code>OLLAMA_ORIGINS</code> to the origin serving LysiPOS (e.g. <code>http://localhost:8080</code>), or <code>*</code> for any origin.</li>
+      <li><strong>LM Studio</strong>: in the Developer tab of LM Studio's local server, enable <em>Serve on network</em> and <em>Enable CORS</em>. Restart the server after changing.</li>
+    </ul>
+
+    <h3>Where your keys live</h3>
+    <p>AI provider settings (URLs, API keys, model name) are stored in a separate IndexedDB entry that is <strong>not</strong> included in exported JSON backups. They stay in whatever browser you configured them in.</p>
+
+    <h2 id="dev">19. Dev Console <span class="tag">(Admin)</span></h2>
     <p>Open <strong>🛠️ Dev Console</strong> from the sidebar. It's the one-stop page for troubleshooting and quick maintenance without leaving the app.</p>
 
     <h3>Session &amp; storage</h3>
@@ -349,7 +399,7 @@
     </ul>
     <div class="bad"><strong>All three are destructive.</strong> Export a backup from <em>Settings → Data</em> first if you might want the data back.</div>
 
-    <h2 id="faq">19. FAQ &amp; troubleshooting</h2>
+    <h2 id="faq">20. FAQ &amp; troubleshooting</h2>
     <h3>The Install button never appears</h3>
     <p>Chrome-family browsers only show the install prompt on secure origins (<code>https://</code> or <code>http://localhost</code>) and after the service worker has registered. Serve the folder with a local HTTP server (e.g. <code>python -m http.server 8080</code>) and reload once.</p>
 

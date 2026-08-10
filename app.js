@@ -6,7 +6,7 @@ import { openScanner, isScannerSupported } from './scanner.js';
 import { chatStream, testConnection as aiTest, defaultConfig as aiDefaultConfig, AI_DEFAULTS } from './ai.js';
 import { requestToken as googleRequestToken, revokeToken as googleRevokeToken, userInfo as googleUserInfo, driveUpload, ensureFolder, DRIVE_SCOPE, USERINFO_SCOPE } from './google.js';
 
-const DEFAULT_GOOGLE_CLIENT_ID = '420770991733-j7gi9omi0as65le877snc8825dm3tch5.apps.googleusercontent.com';
+const DEFAULT_GOOGLE_CLIENT_ID = ''; // paste yours in Settings → Data → Google integration
 
 /* -------------------- console capture (for Dev Console page) -------------------- */
 const LOG_RING = [];
@@ -2813,6 +2813,7 @@ route('/settings', async () => {
               <button class="btn" id="gSave" type="button">Save</button>
               <button class="btn" id="gSignIn" type="button">🔑 Sign in with Google</button>
               <button class="btn ghost" id="gSignOut" type="button">Sign out</button>
+              <button class="btn danger" id="gReset" type="button" title="Wipe stored Google config from this browser">🗑 Reset config</button>
             </div>
           </div>
         </div>
@@ -3105,6 +3106,15 @@ route('/settings', async () => {
       await googleSignOut();
       toast('Signed out of Google.', 'good');
       refreshGoogleStatus();
+    });
+    $('#gReset', el)?.addEventListener('click', async () => {
+      if (!(await confirmModal('Wipe stored Google config from this browser? You will need to paste the Client ID again to upload to Drive. Your data is not affected.', { danger: true, okText: 'Wipe' }))) return;
+      await googleSignOut();
+      await dbDel('settings', 'google');
+      state.google = { key: 'google', clientId: DEFAULT_GOOGLE_CLIENT_ID, folderName: 'LysiPOS Backups', folderId: null };
+      audit('google.reset');
+      toast('Google config cleared — reloading the page.', 'good');
+      setTimeout(() => location.reload(), 600);
     });
   });
   return el;

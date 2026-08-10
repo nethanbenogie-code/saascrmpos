@@ -103,8 +103,8 @@ function confirmModal(message, { danger = false, okText = 'OK', cancelText = 'Ca
 
 /* -------------------- IndexedDB layer -------------------- */
 const DB_NAME = 'lysipos';
-const DB_VER = 3;
-const STORES = ['settings', 'users', 'products', 'categories', 'customers', 'sales', 'audit', 'suppliers', 'expenses', 'backups'];
+const DB_VER = 4;
+const STORES = ['settings', 'users', 'products', 'categories', 'customers', 'sales', 'audit', 'suppliers', 'expenses', 'backups', 'wallets'];
 
 function openDB() {
   return new Promise((resolve, reject) => {
@@ -161,6 +161,7 @@ const state = {
   categories: [],
   customers: [],
   suppliers: [],
+  wallets: [],
   expenses: [],
   sales: [],
   settings: null,
@@ -188,11 +189,12 @@ const DEFAULT_SETTINGS = {
 };
 
 async function loadAll() {
-  const [settings, aiCfg, users, products, categories, customers, suppliers, expenses, sales] = await Promise.all([
+  const [settings, aiCfg, users, products, categories, customers, suppliers, wallets, expenses, sales] = await Promise.all([
     dbGet('settings', 'app'),
     dbGet('settings', 'ai'),
     dbGetAll('users'), dbGetAll('products'), dbGetAll('categories'),
-    dbGetAll('customers'), dbGetAll('suppliers'), dbGetAll('expenses'), dbGetAll('sales')
+    dbGetAll('customers'), dbGetAll('suppliers'), dbGetAll('wallets'),
+    dbGetAll('expenses'), dbGetAll('sales')
   ]);
   state.settings = settings || DEFAULT_SETTINGS;
   state.ai = aiCfg || { key: 'ai', enabled: false, provider: 'anthropic', configs: {
@@ -205,6 +207,7 @@ async function loadAll() {
   state.categories = categories;
   state.customers = customers;
   state.suppliers = suppliers;
+  state.wallets = wallets;
   state.expenses = expenses;
   state.sales = sales;
   document.documentElement.dataset.theme = state.settings.theme || 'dark';
@@ -259,6 +262,7 @@ function snapshotData() {
     categories: state.categories,
     customers: state.customers,
     suppliers: state.suppliers,
+    wallets: state.wallets,
     expenses: state.expenses,
     sales: state.sales
   };
@@ -347,7 +351,7 @@ function normalizeImport(data) {
 
 async function applyImport(data) {
   const norm = normalizeImport(data);
-  for (const store of ['products', 'categories', 'customers', 'suppliers', 'sales', 'users', 'expenses']) {
+  for (const store of ['products', 'categories', 'customers', 'suppliers', 'wallets', 'sales', 'users', 'expenses']) {
     await dbClear(store);
     for (const row of (norm[store] || [])) await dbPut(store, row);
   }
@@ -472,6 +476,12 @@ async function seedIfEmpty() {
         id: uid('p_'), name, price, cost, category, stock, barcode, sku,
         taxable: true, active: true, createdAt: nowISO()
       });
+    }
+  }
+  const wals = await dbGetAll('wallets');
+  if (wals.length === 0) {
+    for (const name of ['GCash', 'PayMaya', 'GoTyme']) {
+      await dbPut('wallets', { id: uid('w_'), name, balance: 0, active: true, createdAt: nowISO() });
     }
   }
   const sups = await dbGetAll('suppliers');
@@ -705,6 +715,7 @@ function shell() {
           <a href="#/products">📦 Products</a>
           <a href="#/inventory">🗃️ Inventory</a>
           <a href="#/labels">🏷️ Labels</a>
+          <a href="#/wallets">💳 Wallets</a>
           <a href="#/suppliers">🚚 Suppliers</a>
           <div class="section">CRM</div>
           <a href="#/customers">👥 Customers</a>
@@ -935,13 +946,39 @@ function cartTotals() {
 }
 
 function addToCart(product, qty = 1) {
-  if ((product.stock ?? 0) < qty) { toast('Not enough stock', 'warn'); return; }
+  const isWallet = !!product.walletFlow;
+  if (!isWallet) {
+    // Regular product — check physical stock
+    if ((product.stock ?? 0) < qty) { toast('Not enough stock', 'warn'); return; }
+    const existing = state.cart.items.find(i => i.productId === product.id);
+    if (existing && product.stock < existing.qty + qty) { toast('Not enough stock', 'warn'); return; }
+  } else if (product.walletFlow === 'cashin') {
+    // Cash-in draws from the store's wallet balance
+    const w = state.wallets.find(x => x.id === product.walletId);
+    if (!w) { toast('Wallet not found for this product', 'bad'); return; }
+    const need = (Number(product.walletAmount) || 0) * qty;
+    // Include everything already queued for this same wallet as cash-in
+    const inCart = state.cart.items.reduce((n, i) => {
+      if (i.walletFlow === 'cashin' && i.walletId === w.id) return n + (Number(i.walletAmount) || 0) * i.qty;
+      return n;
+    }, 0);
+    if (inCart + need > w.balance + 0.0001) {
+      toast(`Not enough ${w.name} balance (${money(w.balance)} available).`, 'warn');
+      return;
+    }
+  }
   const existing = state.cart.items.find(i => i.productId === product.id);
   if (existing) {
-    if (product.stock < existing.qty + qty) { toast('Not enough stock', 'warn'); return; }
     existing.qty += qty;
   } else {
-    state.cart.items.push({ productId: product.id, name: product.name, price: product.price, qty, taxable: product.taxable !== false });
+    state.cart.items.push({
+      productId: product.id, name: product.name, price: product.price, qty,
+      taxable: product.taxable !== false,
+      // Wallet snapshot so refunds still work if the product is edited later
+      walletId: product.walletId || null,
+      walletFlow: product.walletFlow || null,
+      walletAmount: Number(product.walletAmount) || 0
+    });
   }
   refreshCart();
 }
@@ -967,12 +1004,22 @@ function renderCatalog() {
   const grid = $('.product-grid');
   if (!grid) return;
   grid.innerHTML = list.map(p => {
-    const oos = (p.stock ?? 0) <= 0;
+    const isWallet = !!p.walletFlow;
+    let disabled = false, meta = '';
+    if (isWallet) {
+      const w = state.wallets.find(x => x.id === p.walletId);
+      const bal = w ? w.balance : 0;
+      if (p.walletFlow === 'cashin') disabled = !w || bal < (Number(p.walletAmount) || 0);
+      meta = `${p.walletFlow === 'cashin' ? '↑ Cash-in' : '↓ Cash-out'} · ${money(p.walletAmount || 0)}${w ? ' · ' + w.name + ' ' + money(bal) : ''}`;
+    } else {
+      disabled = (p.stock ?? 0) <= 0;
+      meta = `Stock: ${p.stock ?? 0} · ${escapeHtml(p.sku || '')}`;
+    }
     return html`
-      <div class="product-card ${oos ? 'oos' : ''}" data-pid="${p.id}">
-        <div class="p-name">${escapeHtml(p.name)}</div>
-        <div class="p-price">${money(p.price)}</div>
-        <div class="p-meta">Stock: ${p.stock ?? 0} · ${escapeHtml(p.sku || '')}</div>
+      <div class="product-card ${disabled ? 'oos' : ''}" data-pid="${p.id}">
+        <div class="p-name">${escapeHtml(p.name)} ${isWallet ? '<span class="badge">💳</span>' : ''}</div>
+        <div class="p-price">${money(p.price)}${isWallet ? ' <span class="muted" style="font-size:10px;font-weight:400">fee</span>' : ''}</div>
+        <div class="p-meta">${meta}</div>
       </div>`;
   }).join('') || '<div class="empty">No matching products</div>';
   grid.querySelectorAll('.product-card').forEach(el => {
@@ -1047,10 +1094,19 @@ async function completeSale(payment) {
     note: state.cart.note,
     createdAt: nowISO()
   };
-  // decrement stock
+  // decrement stock (skip wallet lines) and update wallet balances
   for (const li of sale.items) {
-    const p = state.products.find(x => x.id === li.productId);
-    if (p) { p.stock = Math.max(0, (p.stock || 0) - li.qty); await dbPut('products', p); }
+    if (li.walletFlow) {
+      const w = state.wallets.find(x => x.id === li.walletId);
+      if (w) {
+        const delta = (Number(li.walletAmount) || 0) * li.qty;
+        w.balance = (Number(w.balance) || 0) + (li.walletFlow === 'cashout' ? delta : -delta);
+        await dbPut('wallets', w);
+      }
+    } else {
+      const p = state.products.find(x => x.id === li.productId);
+      if (p) { p.stock = Math.max(0, (p.stock || 0) - li.qty); await dbPut('products', p); }
+    }
   }
   // loyalty
   if (sale.customerId) {
@@ -1172,6 +1228,7 @@ route('/pos', async () => {
           ${state.categories.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}
         </select>
       </div>
+      ${state.wallets.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">${state.wallets.filter(w => w.active !== false).map(w => `<a class="pill" href="#/wallets" title="Open wallets" style="text-decoration:none;color:inherit">💳 ${escapeHtml(w.name)}: <b style="color:${(w.balance||0) < 0 ? 'var(--bad)' : 'var(--accent)'}">${money(w.balance||0)}</b></a>`).join('')}</div>` : ''}
       <div class="product-grid"></div>
     </div>
     <div class="cart">
@@ -1350,14 +1407,30 @@ function productForm(existing = {}) {
       <div class="field"><label>Supplier</label>
         <select name="supplierId"><option value="">—</option>${state.suppliers.map(sp => `<option value="${sp.id}" ${existing.supplierId === sp.id ? 'selected' : ''}>${escapeHtml(sp.name)}</option>`).join('')}</select>
       </div>
-      <div class="field"><label>Price</label><input name="price" type="number" step="0.01" min="0" value="${existing.price ?? 0}" /></div>
+      <div class="field"><label>Price / Fee</label><input name="price" type="number" step="0.01" min="0" value="${existing.price ?? 0}" /></div>
       <div class="field"><label>Cost</label><input name="cost" type="number" step="0.01" min="0" value="${existing.cost ?? 0}" /></div>
-      <div class="field"><label>Stock</label><input name="stock" type="number" step="1" min="0" value="${existing.stock ?? 0}" /></div>
+      <div class="field"><label>Stock <span class="muted" style="font-weight:400">(ignored for wallet products)</span></label><input name="stock" type="number" step="1" min="0" value="${existing.stock ?? 0}" /></div>
       <div class="field"><label>Taxable</label>
         <select name="taxable"><option value="1" ${existing.taxable !== false ? 'selected' : ''}>Yes</option><option value="0" ${existing.taxable === false ? 'selected' : ''}>No</option></select>
       </div>
-      <div class="field" style="grid-column:1/-1"><label>Active</label>
+      <div class="field"><label>Active</label>
         <select name="active"><option value="1" ${existing.active !== false ? 'selected' : ''}>Yes</option><option value="0" ${existing.active === false ? 'selected' : ''}>No</option></select>
+      </div>
+      <div class="field"><label>Wallet flow</label>
+        <select name="walletFlow">
+          <option value="" ${!existing.walletFlow ? 'selected' : ''}>— none (regular product) —</option>
+          <option value="cashin"  ${existing.walletFlow === 'cashin'  ? 'selected' : ''}>Cash-in (customer pays cash → wallet decreases)</option>
+          <option value="cashout" ${existing.walletFlow === 'cashout' ? 'selected' : ''}>Cash-out (customer sends to wallet → wallet increases)</option>
+        </select>
+      </div>
+      <div class="field"><label>Wallet</label>
+        <select name="walletId">
+          <option value="">—</option>
+          ${state.wallets.map(w => `<option value="${w.id}" ${existing.walletId === w.id ? 'selected' : ''}>${escapeHtml(w.name)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field" style="grid-column:1/-1"><label>Wallet amount <span class="muted" style="font-weight:400">(the transaction value that moves in/out of the wallet — Price above is the fee your customer pays)</span></label>
+        <input name="walletAmount" type="number" step="0.01" min="0" value="${existing.walletAmount ?? 0}" />
       </div>
     </div>`;
   return body;
@@ -1507,8 +1580,11 @@ route('/products', async () => {
         name: d.name.trim(), sku: d.sku.trim(), barcode: d.barcode.trim(), category: d.category || '',
         supplierId: d.supplierId || '',
         price: Number(d.price) || 0, cost: Number(d.cost) || 0, stock: Number(d.stock) || 0,
-        taxable: d.taxable === '1', active: d.active === '1'
+        taxable: d.taxable === '1', active: d.active === '1',
+        walletFlow: d.walletFlow || '', walletId: d.walletId || '',
+        walletAmount: Number(d.walletAmount) || 0
       });
+      if (rec.walletFlow && !rec.walletId) { toast('Wallet flow requires a wallet to be selected.', 'bad'); return; }
       await dbPut('products', rec);
       const idx = state.products.findIndex(p => p.id === rec.id);
       if (idx >= 0) state.products[idx] = rec; else state.products.push(rec);
@@ -1861,6 +1937,243 @@ route('/labels', async () => {
   return el;
 });
 
+/* Wallets — e-wallet accounts (GCash, PayMaya, GoTyme, …) with a single shared balance per wallet */
+route('/wallets', async () => {
+  const el = document.createElement('div');
+  el.className = 'page';
+  const totalBal = state.wallets.reduce((n, w) => n + (Number(w.balance) || 0), 0);
+  el.innerHTML = html`
+    <h1>Wallets</h1>
+    <div class="sub">One balance per wallet. All cash-in and cash-out products for a wallet share that balance.</div>
+    <div class="grid cols-4" style="margin-bottom:14px">
+      <div class="kpi"><div class="label">Wallets</div><div class="value">${state.wallets.length}</div></div>
+      <div class="kpi"><div class="label">Total balance across wallets</div><div class="value">${money(totalBal)}</div></div>
+      <div class="kpi"><div class="label">Cash-in products</div><div class="value">${state.products.filter(p => p.walletFlow === 'cashin').length}</div></div>
+      <div class="kpi"><div class="label">Cash-out products</div><div class="value">${state.products.filter(p => p.walletFlow === 'cashout').length}</div></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><div class="spacer"></div><button class="btn primary small" id="wNew">+ New wallet</button></div>
+      <div class="card-b" id="wList"></div>
+    </div>`;
+
+  const wCard = (w) => {
+    const cashInProducts = state.products.filter(p => p.walletFlow === 'cashin' && p.walletId === w.id);
+    const cashOutProducts = state.products.filter(p => p.walletFlow === 'cashout' && p.walletId === w.id);
+    // Recent movements from sales
+    const moves = [];
+    for (const s of state.sales) {
+      if (s.refunded) continue;
+      for (const li of s.items) {
+        if (li.walletId === w.id && li.walletFlow) {
+          const amt = (Number(li.walletAmount) || 0) * li.qty;
+          moves.push({ at: s.createdAt, saleId: s.id, saleNo: s.number, flow: li.walletFlow, amount: amt, name: li.name, qty: li.qty });
+        }
+      }
+    }
+    moves.sort((a, b) => (a.at < b.at ? 1 : -1));
+    const recent = moves.slice(0, 8);
+    return html`
+      <div class="card" style="margin-bottom:10px" data-wid="${w.id}">
+        <div class="card-h">
+          <h3>💳 ${escapeHtml(w.name)} ${w.active === false ? '<span class="badge">inactive</span>' : ''}</h3>
+          <div class="spacer"></div>
+          <div style="text-align:right">
+            <div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.08em">Balance</div>
+            <div class="mono" style="font-size:20px;font-weight:700;color:${(w.balance||0) < 0 ? 'var(--bad)' : 'var(--accent)'}">${money(w.balance || 0)}</div>
+          </div>
+        </div>
+        <div class="card-b">
+          <div class="row" style="gap:6px;margin-bottom:8px">
+            <button class="btn small" data-topup>+ Top up (cash → wallet)</button>
+            <button class="btn small" data-withdraw>− Withdraw (wallet → cash)</button>
+            <button class="btn small" data-set>Set balance directly</button>
+            <button class="btn small" data-quickin>Quick-add cash-in denominations</button>
+            <button class="btn small" data-quickout>Quick-add cash-out denominations</button>
+            <div class="spacer"></div>
+            <button class="btn small" data-edit>Edit</button>
+            <button class="btn small danger" data-del>Delete</button>
+          </div>
+          <div class="grid cols-2">
+            <div>
+              <h4 style="margin:0 0 4px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">Cash-in products (${cashInProducts.length})</h4>
+              ${cashInProducts.length ? html`<table class="data"><thead><tr><th>Name</th><th class="right">Amount</th><th class="right">Fee</th></tr></thead>
+                <tbody>${cashInProducts.map(p => `<tr><td>${escapeHtml(p.name)}</td><td class="right mono">${money(p.walletAmount || 0)}</td><td class="right mono">${money(p.price)}</td></tr>`).join('')}</tbody></table>`
+                : '<div class="muted" style="font-size:12px">No cash-in products yet. Use <em>Quick-add</em>.</div>'}
+            </div>
+            <div>
+              <h4 style="margin:0 0 4px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">Cash-out products (${cashOutProducts.length})</h4>
+              ${cashOutProducts.length ? html`<table class="data"><thead><tr><th>Name</th><th class="right">Amount</th><th class="right">Fee</th></tr></thead>
+                <tbody>${cashOutProducts.map(p => `<tr><td>${escapeHtml(p.name)}</td><td class="right mono">${money(p.walletAmount || 0)}</td><td class="right mono">${money(p.price)}</td></tr>`).join('')}</tbody></table>`
+                : '<div class="muted" style="font-size:12px">No cash-out products yet.</div>'}
+            </div>
+          </div>
+          <h4 style="margin:14px 0 4px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">Recent movements</h4>
+          ${recent.length ? html`<table class="data"><thead><tr><th>When</th><th>Sale</th><th>Flow</th><th>Product</th><th class="right">Amount</th></tr></thead>
+            <tbody>${recent.map(m => `<tr><td>${fmtDate(m.at)}</td><td class="mono">${m.saleNo}</td><td><span class="badge ${m.flow === 'cashin' ? 'bad' : 'good'}">${m.flow === 'cashin' ? '− cash-in' : '+ cash-out'}</span></td><td>${escapeHtml(m.name)} × ${m.qty}</td><td class="right mono">${money(m.amount)}</td></tr>`).join('')}</tbody></table>`
+            : '<div class="muted" style="font-size:12px">No sales have touched this wallet yet.</div>'}
+        </div>
+      </div>`;
+  };
+
+  const rerender = () => {
+    const list = state.wallets.slice().sort((a, b) => a.name.localeCompare(b.name));
+    $('#wList', el).innerHTML = list.length ? list.map(wCard).join('') : '<div class="empty"><div class="icn">💳</div>No wallets yet — click <b>+ New wallet</b>.</div>';
+    // Wire per-wallet actions
+    el.querySelectorAll('[data-wid]').forEach(node => {
+      const wid = node.dataset.wid;
+      const w = state.wallets.find(x => x.id === wid);
+      node.querySelector('[data-edit]')?.addEventListener('click', () => openWalletForm(w));
+      node.querySelector('[data-del]')?.addEventListener('click', () => deleteWallet(w));
+      node.querySelector('[data-topup]')?.addEventListener('click', () => adjustBalance(w, '+', 'Top up'));
+      node.querySelector('[data-withdraw]')?.addEventListener('click', () => adjustBalance(w, '-', 'Withdraw'));
+      node.querySelector('[data-set]')?.addEventListener('click', () => setBalance(w));
+      node.querySelector('[data-quickin]')?.addEventListener('click', () => quickAdd(w, 'cashin'));
+      node.querySelector('[data-quickout]')?.addEventListener('click', () => quickAdd(w, 'cashout'));
+    });
+  };
+
+  const openWalletForm = (existing) => {
+    const body = document.createElement('div');
+    body.innerHTML = html`
+      <div class="grid cols-2">
+        <div class="field"><label>Wallet name</label><input name="name" value="${escapeHtml(existing?.name || '')}" placeholder="e.g. GCash"></div>
+        <div class="field"><label>Active</label>
+          <select name="active"><option value="1" ${existing?.active !== false ? 'selected' : ''}>Yes</option><option value="0" ${existing?.active === false ? 'selected' : ''}>No</option></select>
+        </div>
+        ${!existing ? `<div class="field" style="grid-column:1/-1"><label>Starting balance</label><input name="balance" type="number" step="0.01" value="0"></div>` : ''}
+      </div>`;
+    const foot = document.createElement('div');
+    foot.innerHTML = '<button class="btn ghost" data-cancel>Cancel</button><button class="btn primary" data-save>Save</button>';
+    const m = openModal({ title: existing ? 'Edit wallet' : 'New wallet', body, footer: foot });
+    foot.querySelector('[data-cancel]').addEventListener('click', m.close);
+    foot.querySelector('[data-save]').addEventListener('click', async () => {
+      const d = readForm(body);
+      if (!d.name?.trim()) return toast('Wallet name required', 'bad');
+      const rec = existing ? { ...existing } : { id: uid('w_'), createdAt: nowISO(), balance: Number(d.balance) || 0 };
+      rec.name = d.name.trim();
+      rec.active = d.active === '1';
+      await dbPut('wallets', rec);
+      const idx = state.wallets.findIndex(w => w.id === rec.id);
+      if (idx >= 0) state.wallets[idx] = rec; else state.wallets.push(rec);
+      audit(existing ? 'wallet.update' : 'wallet.create', { id: rec.id, name: rec.name });
+      m.close(); toast('Saved', 'good'); rerender();
+    });
+  };
+
+  const deleteWallet = async (w) => {
+    const linked = state.products.filter(p => p.walletId === w.id).length;
+    const msg = linked
+      ? `Delete "${w.name}"? ${linked} product${linked === 1 ? '' : 's'} will be un-linked from this wallet (they won't be deleted).`
+      : `Delete "${w.name}"?`;
+    if (!(await confirmModal(msg, { danger: true, okText: 'Delete' }))) return;
+    for (const p of state.products) if (p.walletId === w.id) { p.walletId = ''; p.walletFlow = ''; await dbPut('products', p); }
+    await dbDel('wallets', w.id);
+    state.wallets = state.wallets.filter(x => x.id !== w.id);
+    audit('wallet.delete', { id: w.id, name: w.name }); toast('Deleted', 'good'); rerender();
+  };
+
+  const adjustBalance = (w, sign, title) => {
+    const body = document.createElement('div');
+    body.innerHTML = html`
+      <div class="muted" style="margin-bottom:8px;font-size:12px">Current balance: <b>${money(w.balance || 0)}</b></div>
+      <div class="field"><label>Amount</label><input name="amt" type="number" step="0.01" min="0" autofocus></div>
+      <div class="field"><label>Note (optional)</label><input name="note" placeholder="e.g. Owner deposit"></div>`;
+    const foot = document.createElement('div');
+    foot.innerHTML = `<button class="btn ghost" data-cancel>Cancel</button><button class="btn primary" data-ok>${escapeHtml(title)}</button>`;
+    const m = openModal({ title: `${title} — ${w.name}`, body, footer: foot });
+    foot.querySelector('[data-cancel]').addEventListener('click', m.close);
+    foot.querySelector('[data-ok]').addEventListener('click', async () => {
+      const d = readForm(body);
+      const amt = Number(d.amt) || 0;
+      if (amt <= 0) return toast('Enter a positive amount', 'bad');
+      w.balance = (Number(w.balance) || 0) + (sign === '+' ? amt : -amt);
+      await dbPut('wallets', w);
+      audit('wallet.adjust', { id: w.id, sign, amount: amt, note: d.note || '' });
+      m.close(); toast(`${w.name}: ${sign === '+' ? '+' : '−'}${money(amt)} (${money(w.balance)})`, 'good'); rerender();
+    });
+  };
+
+  const setBalance = (w) => {
+    const body = document.createElement('div');
+    body.innerHTML = html`
+      <div class="muted" style="margin-bottom:8px;font-size:12px">Current: <b>${money(w.balance || 0)}</b>. Use this when reconciling.</div>
+      <div class="field"><label>New balance</label><input name="balance" type="number" step="0.01" value="${w.balance || 0}" autofocus></div>`;
+    const foot = document.createElement('div');
+    foot.innerHTML = '<button class="btn ghost" data-cancel>Cancel</button><button class="btn primary" data-ok>Set balance</button>';
+    const m = openModal({ title: 'Set balance — ' + w.name, body, footer: foot });
+    foot.querySelector('[data-cancel]').addEventListener('click', m.close);
+    foot.querySelector('[data-ok]').addEventListener('click', async () => {
+      const nv = Number($('input[name=balance]', body).value);
+      if (isNaN(nv)) return toast('Enter a number', 'bad');
+      const old = w.balance;
+      w.balance = nv;
+      await dbPut('wallets', w);
+      audit('wallet.setBalance', { id: w.id, from: old, to: nv });
+      m.close(); toast(`${w.name} balance set to ${money(nv)}`, 'good'); rerender();
+    });
+  };
+
+  const quickAdd = (w, flow) => {
+    const body = document.createElement('div');
+    const isIn = flow === 'cashin';
+    body.innerHTML = html`
+      <div class="muted" style="margin-bottom:8px;font-size:12px">This will create ${isIn ? 'cash-in' : 'cash-out'} products for <b>${escapeHtml(w.name)}</b>. Existing products with the same name will be skipped.</div>
+      <div class="field"><label>Denominations (comma-separated, in ${state.settings.currency})</label>
+        <input name="denoms" value="50, 100, 200, 300, 500, 1000, 2000, 5000">
+      </div>
+      <div class="field"><label>Fee formula</label>
+        <select name="feeMode">
+          <option value="flat">Flat fee</option>
+          <option value="percent">Percentage of amount</option>
+          <option value="tier">Tiered (₱5 up to ₱500, ₱10 up to ₱1000, etc.)</option>
+        </select>
+      </div>
+      <div class="field" id="feeValRow"><label>Fee value</label><input name="feeVal" type="number" step="0.01" value="5"></div>
+      <div class="field"><label>Category (optional)</label>
+        <select name="category"><option value="">—</option>${state.categories.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}</select>
+      </div>`;
+    const foot = document.createElement('div');
+    foot.innerHTML = '<button class="btn ghost" data-cancel>Cancel</button><button class="btn primary" data-ok>Create products</button>';
+    const m = openModal({ title: (isIn ? 'Quick-add cash-in — ' : 'Quick-add cash-out — ') + w.name, body, footer: foot });
+    foot.querySelector('[data-cancel]').addEventListener('click', m.close);
+    foot.querySelector('[data-ok]').addEventListener('click', async () => {
+      const d = readForm(body);
+      const denoms = String(d.denoms || '').split(',').map(x => Number(String(x).trim())).filter(x => x > 0);
+      if (!denoms.length) return toast('Enter at least one denomination', 'bad');
+      const feeVal = Number(d.feeVal) || 0;
+      const tier = (amt) => amt <= 500 ? 5 : amt <= 1000 ? 10 : amt <= 2000 ? 15 : amt <= 5000 ? 20 : 25;
+      let created = 0, skipped = 0;
+      for (const amt of denoms) {
+        const name = `${w.name} ${isIn ? 'Cash-in' : 'Cash-out'} ${state.settings.currency}${amt}`;
+        if (state.products.some(p => p.name.toLowerCase() === name.toLowerCase())) { skipped++; continue; }
+        const fee = d.feeMode === 'flat' ? feeVal
+          : d.feeMode === 'percent' ? Math.round(amt * feeVal) / 100
+          : tier(amt);
+        const rec = {
+          id: uid('p_'), createdAt: nowISO(),
+          name, sku: `${w.name.substring(0,3).toUpperCase()}-${flow.toUpperCase()}-${amt}`.replace(/\s+/g, ''),
+          barcode: '', category: d.category || '', supplierId: '',
+          price: fee, cost: 0, stock: 999999,
+          taxable: false, active: true,
+          walletFlow: flow, walletId: w.id, walletAmount: amt
+        };
+        await dbPut('products', rec);
+        state.products.push(rec);
+        created++;
+      }
+      m.close();
+      toast(`Created ${created} product${created === 1 ? '' : 's'}${skipped ? `, skipped ${skipped} duplicate${skipped === 1 ? '' : 's'}` : ''}`, 'good');
+      rerender();
+    });
+  };
+
+  queueMicrotask(() => {
+    $('#wNew', el).addEventListener('click', () => openWalletForm(null));
+    rerender();
+  });
+  return el;
+});
+
 /* Customers */
 function customerForm(existing = {}) {
   const body = document.createElement('div');
@@ -2160,11 +2473,21 @@ route('/sales', async () => {
       foot.querySelector('[data-close2]').addEventListener('click', m.close);
       foot.querySelector('[data-print]').addEventListener('click', () => window.print());
       foot.querySelector('[data-refund]')?.addEventListener('click', async () => {
-        if (!(await confirmModal('Refund this sale and restore stock?', { danger: true, okText: 'Refund' }))) return;
+        if (!(await confirmModal('Refund this sale? Stock will be restored and any wallet movements reversed.', { danger: true, okText: 'Refund' }))) return;
         s.refunded = true; s.refundedAt = nowISO();
         for (const li of s.items) {
-          const p = state.products.find(x => x.id === li.productId);
-          if (p) { p.stock = (p.stock || 0) + li.qty; await dbPut('products', p); }
+          if (li.walletFlow) {
+            const w = state.wallets.find(x => x.id === li.walletId);
+            if (w) {
+              const delta = (Number(li.walletAmount) || 0) * li.qty;
+              // Reverse the original direction
+              w.balance = (Number(w.balance) || 0) + (li.walletFlow === 'cashout' ? -delta : delta);
+              await dbPut('wallets', w);
+            }
+          } else {
+            const p = state.products.find(x => x.id === li.productId);
+            if (p) { p.stock = (p.stock || 0) + li.qty; await dbPut('products', p); }
+          }
         }
         await dbPut('sales', s); audit('sale.refund', { id: s.id });
         m.close(); toast('Refunded', 'good'); rerender();
@@ -3103,10 +3426,28 @@ window.addEventListener('beforeinstallprompt', (e) => {
 });
 
 /* -------------------- bootstrap -------------------- */
+async function runMigrations() {
+  // Pre-wallet-feature safety backup: taken once on first boot with the new schema
+  // and only if there's existing data worth backing up. Stored as a rolling backup
+  // so the user can restore via Settings → Rolling backups if anything goes sideways.
+  if (!state.settings.walletMigrationDone) {
+    const hasData = state.products.length > 0 || state.sales.length > 0 || state.customers.length > 0;
+    if (hasData) {
+      try {
+        const rec = await saveRollingBackup('pre-wallet-feature');
+        console.log('Pre-wallet-feature backup saved:', rec.id);
+      } catch (e) { console.error('Pre-migration backup failed:', e); }
+    }
+    state.settings.walletMigrationDone = true;
+    await saveSettings();
+  }
+}
+
 (async function boot() {
   await seedIfEmpty();
   await ensureAdmin(); // safety net for imported DBs that lost the admin
   await loadAll();
+  await runMigrations();
   await restoreSession();
   render();
   // Fire auto-backup after the UI is up

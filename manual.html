@@ -77,18 +77,19 @@
     <a href="#catalog">6. Products &amp; categories</a>
     <a href="#inventory">7. Inventory</a>
     <a href="#suppliers">8. Suppliers</a>
-    <a href="#labels">9. Barcodes, QR &amp; labels</a>
-    <a href="#crm">10. Customers (CRM)</a>
-    <a href="#sales">11. Sales history &amp; refunds</a>
-    <a href="#reports">12. Reports &amp; exports</a>
-    <a href="#users">13. Users &amp; roles</a>
-    <a href="#settings">14. Settings, tax &amp; currency</a>
-    <a href="#backup">15. Backup, restore &amp; reset</a>
-    <a href="#offline">16. Offline &amp; data safety</a>
-    <a href="#shortcuts">17. Keyboard &amp; barcode tips</a>
-    <a href="#ai">18. AI Assistant</a>
-    <a href="#dev">19. Dev Console (admin)</a>
-    <a href="#faq">20. FAQ &amp; troubleshooting</a>
+    <a href="#wallets">9. Wallets (e-money cash-in / cash-out)</a>
+    <a href="#labels">10. Barcodes, QR &amp; labels</a>
+    <a href="#crm">11. Customers (CRM)</a>
+    <a href="#sales">12. Sales history &amp; refunds</a>
+    <a href="#reports">13. Reports &amp; exports</a>
+    <a href="#users">14. Users &amp; roles</a>
+    <a href="#settings">15. Settings, tax &amp; currency</a>
+    <a href="#backup">16. Backup, restore &amp; reset</a>
+    <a href="#offline">17. Offline &amp; data safety</a>
+    <a href="#shortcuts">18. Keyboard &amp; barcode tips</a>
+    <a href="#ai">19. AI Assistant</a>
+    <a href="#dev">20. Dev Console (admin)</a>
+    <a href="#faq">21. FAQ &amp; troubleshooting</a>
   </nav>
 
   <main>
@@ -200,7 +201,54 @@
     <p>Every product now has a <em>Supplier</em> dropdown in its edit form (<em>Products → Edit</em>). Assign a supplier to answer questions like "who do we reorder this from?" and "which vendor supplies most of our stock?" Deleting a supplier automatically clears the link on any product that used it — the products stay, they just lose the supplier assignment.</p>
     <div class="note">Suppliers are included in JSON backups and the Products CSV export (as an extra <em>Supplier</em> column).</div>
 
-    <h2 id="labels">9. Barcodes, QR &amp; labels</h2>
+    <h2 id="wallets">9. Wallets (e-money cash-in / cash-out)</h2>
+    <p>LysiPOS models digital wallets (GCash, PayMaya, GoTyme, and any other e-money service) as first-class objects with a <strong>single shared balance per wallet</strong>. Every cash-in or cash-out product tied to that wallet draws from or adds to the same balance — so ₱50 cash-in, ₱100 cash-in, ₱500 cash-out, etc. all live inside one running total.</p>
+
+    <div class="note">The first time you open the app after this feature was added, a <strong>pre-wallet-feature</strong> safety backup is saved automatically to your Rolling backups (Settings → Data → Rolling backups). If anything goes wrong you can restore that snapshot with one click.</div>
+
+    <h3>Create a wallet</h3>
+    <ol>
+      <li>Open <strong>💳 Wallets</strong> from the sidebar. GCash, PayMaya and GoTyme are seeded on first run with a starting balance of 0.</li>
+      <li>Click <strong>+ New wallet</strong> to add another (e.g. Maya Bank, ShopeePay, Coins.ph).</li>
+      <li>Use <strong>+ Top up</strong> to record physical cash you deposited into the wallet, or <strong>− Withdraw</strong> when you pull cash back out. <strong>Set balance directly</strong> is for reconciling against the wallet app's actual figure.</li>
+    </ol>
+
+    <h3>Quick-create denominations</h3>
+    <p>On each wallet card, click <strong>Quick-add cash-in denominations</strong> or <strong>Quick-add cash-out denominations</strong>. In the dialog:</p>
+    <ul>
+      <li>Enter the <em>Denominations</em> (default: 50, 100, 200, 300, 500, 1000, 2000, 5000).</li>
+      <li>Choose a <em>Fee formula</em>: <strong>Flat</strong> (same fee for every denom), <strong>Percentage</strong> (fee = amount × %), or <strong>Tiered</strong> (₱5 up to ₱500, ₱10 up to ₱1000, ₱15 up to ₱2000, ₱20 up to ₱5000, ₱25 above).</li>
+      <li>Products are created with the naming pattern <code>GCash Cash-in ₱500</code> and SKUs like <code>GCA-CASHIN-500</code>. Duplicates (same name) are skipped so you can safely re-run the tool.</li>
+    </ul>
+
+    <h3>How balances move</h3>
+    <table>
+      <tr><th>Product flow</th><th>What happens at checkout</th></tr>
+      <tr><td><strong>Cash-in</strong></td><td>Customer hands you cash. You transfer ₱ from your wallet to theirs. <strong>Wallet balance decreases</strong> by <em>Wallet amount × qty</em>. The customer also pays the <em>Price</em> (your fee) which counts as regular revenue.</td></tr>
+      <tr><td><strong>Cash-out</strong></td><td>Customer transfers to your wallet. You hand them cash. <strong>Wallet balance increases</strong> by <em>Wallet amount × qty</em>. You still collect the <em>Price</em> (fee) as revenue.</td></tr>
+    </table>
+    <p>A refund from Sales history reverses both the wallet movement and the fee.</p>
+
+    <h3>Guardrails at the POS</h3>
+    <ul>
+      <li>Cash-in tiles for a wallet are <strong>dimmed and un-clickable</strong> when the wallet doesn't have enough balance to cover the transaction.</li>
+      <li>Multiple cash-in items for the same wallet in a single cart are summed together before the availability check — so a ₱500 + ₱200 cash-in only works if the wallet has ≥ ₱700.</li>
+      <li>Cash-out tiles are always available (they add to the wallet, so no floor to worry about).</li>
+      <li>The top of the POS page shows a live pill row of every wallet's current balance so the cashier can spot low wallets before starting a sale.</li>
+      <li>Wallet products ignore the <em>Stock</em> field — no need to keep re-stocking, as long as the wallet balance allows.</li>
+    </ul>
+
+    <h3>Editing a product to be a wallet product</h3>
+    <p>Open <em>Products → Edit</em>. New fields:</p>
+    <ul>
+      <li><strong>Wallet flow</strong>: <em>none</em> (regular product) / Cash-in / Cash-out.</li>
+      <li><strong>Wallet</strong>: which wallet this product belongs to.</li>
+      <li><strong>Wallet amount</strong>: the transaction value that moves through the wallet.</li>
+      <li><strong>Price</strong>: on wallet products this is your fee, not the transaction amount.</li>
+    </ul>
+    <p>Saving with a Wallet flow but no wallet selected is rejected with a clear error.</p>
+
+    <h2 id="labels">10. Barcodes, QR &amp; labels</h2>
     <p>LysiPOS ships with three built-in ways to work with codes — no external libraries, everything runs offline.</p>
 
     <h3>Generate a barcode or QR for a product</h3>
@@ -233,7 +281,7 @@
     </ul>
     <div class="note">The QR generator supports up to about 213 characters (version 10 at error-correction level M). Enough for URLs, product JSON, and long SKUs. If you feed it more it will refuse rather than truncate.</div>
 
-    <h2 id="crm">10. Customers (CRM)</h2>
+    <h2 id="crm">11. Customers (CRM)</h2>
     <p>Open <strong>Customers</strong> to manage your CRM.</p>
     <ul>
       <li><strong>+ New customer</strong>: name, email, phone, address, tags (comma-separated), notes.</li>
@@ -243,14 +291,14 @@
     <h3>Loyalty points</h3>
     <p>Every attached sale earns points according to <em>Settings → Money → Loyalty pts per {currency}</em>. Set <em>1 pt worth</em> if you plan to redeem points as store credit in the future.</p>
 
-    <h2 id="sales">11. Sales history &amp; refunds</h2>
+    <h2 id="sales">12. Sales history &amp; refunds</h2>
     <p>Open <strong>Sales</strong> to see every completed sale, filter by date range or receipt number, and see the running total for the current filter.</p>
     <ul>
       <li>Click <strong>View</strong> on any row to open the receipt.</li>
       <li>From the receipt dialog, <strong>Print</strong> re-prints it or <strong>Refund</strong> reverses the sale — the sale is marked refunded and stock is restored.</li>
     </ul>
 
-    <h2 id="reports">12. Reports &amp; exports</h2>
+    <h2 id="reports">13. Reports &amp; exports</h2>
     <p>Open <strong>Reports</strong> for a rolling 30-day view: revenue, items, average ticket, a daily bar chart, and breakdowns by category and cashier.</p>
     <p>Under <em>Export</em>:</p>
     <ul>
@@ -259,7 +307,7 @@
     </ul>
     <p>Both files open in Excel, Numbers, or Google Sheets.</p>
 
-    <h2 id="users">13. Users &amp; roles <span class="tag">(Admin)</span></h2>
+    <h2 id="users">14. Users &amp; roles <span class="tag">(Admin)</span></h2>
     <p>Open <strong>Users</strong>. Add teammates and assign one of three roles:</p>
     <table>
       <tr><th>Role</th><th>Can do</th></tr>
@@ -269,7 +317,7 @@
     </table>
     <p>Editing a user with the password field blank keeps the existing password. Deactivate a user by setting <em>Active: No</em> instead of deleting them — this preserves their name on past receipts.</p>
 
-    <h2 id="settings">14. Settings, tax &amp; currency</h2>
+    <h2 id="settings">15. Settings, tax &amp; currency</h2>
     <p>Open <strong>Settings</strong>. Fields:</p>
     <ul>
       <li><strong>Business</strong>: name, address, phone, email, receipt footer.</li>
@@ -280,7 +328,7 @@
     </ul>
     <p>Click <strong>Save settings</strong> — the sidebar and receipt update immediately.</p>
 
-    <h2 id="backup">15. Backup, restore &amp; reset</h2>
+    <h2 id="backup">16. Backup, restore &amp; reset</h2>
     <p>Under <em>Settings → Data</em>:</p>
     <ul>
       <li><strong>Export backup (JSON)</strong> saves a single file containing all products, categories, suppliers, customers, sales, users, expenses and settings. Keep this file somewhere safe (cloud drive, USB stick).</li>
@@ -300,7 +348,7 @@
     <p>Under <em>Rolling backups</em> you'll see every stored snapshot with buttons to <em>Download</em>, <em>Restore</em>, or <em>Delete</em> individually.</p>
     <div class="note">Because folder permission is per-session, Chrome may re-prompt for access the first time an auto-backup fires after each app relaunch — a one-click confirmation.</div>
 
-    <h2 id="offline">16. Offline &amp; data safety</h2>
+    <h2 id="offline">17. Offline &amp; data safety</h2>
     <p>LysiPOS is <strong>offline-first</strong>. Once installed, the app shell (HTML/CSS/JS/icons) is cached by the service worker and all data lives in your browser's IndexedDB. You can sell, add customers, and adjust inventory with no internet connection.</p>
     <p>The online/offline pill in the top bar reflects the browser's connection state.</p>
     <div class="warn">
@@ -312,7 +360,7 @@
       </ul>
     </div>
 
-    <h2 id="shortcuts">17. Keyboard &amp; barcode tips</h2>
+    <h2 id="shortcuts">18. Keyboard &amp; barcode tips</h2>
     <p>The POS terminal has a full set of keyboard shortcuts. Press <kbd>F1</kbd> (or click the <strong>⌨️</strong> button in the toolbar) on the POS page to see them in-app.</p>
     <table>
       <tr><th>Shortcut</th><th>Action</th></tr>
@@ -339,7 +387,7 @@
       <li>Barcode scanners of the USB / Bluetooth "keyboard wedge" type act as a keyboard — no special setup, just make sure the search box is focused.</li>
     </ul>
 
-    <h2 id="ai">18. AI Assistant</h2>
+    <h2 id="ai">19. AI Assistant</h2>
     <p>LysiPOS ships with an optional chat assistant that can read your store data and this manual, then answer questions or make suggestions ("what should I restock", "how were sales last week", "explain tax-inclusive pricing"). It's <strong>off by default</strong>.</p>
 
     <h3>Enable it (Admin)</h3>
@@ -385,7 +433,7 @@
     <h3>Where your keys live</h3>
     <p>AI provider settings (URLs, API keys, model name) are stored in a separate IndexedDB entry that is <strong>not</strong> included in exported JSON backups. They stay in whatever browser you configured them in.</p>
 
-    <h2 id="dev">19. Dev Console <span class="tag">(Admin)</span></h2>
+    <h2 id="dev">20. Dev Console <span class="tag">(Admin)</span></h2>
     <p>Open <strong>🛠️ Dev Console</strong> from the sidebar. It's the one-stop page for troubleshooting and quick maintenance without leaving the app.</p>
 
     <h3>Session &amp; storage</h3>
@@ -418,7 +466,7 @@
     </ul>
     <div class="bad"><strong>All three are destructive.</strong> Export a backup from <em>Settings → Data</em> first if you might want the data back.</div>
 
-    <h2 id="faq">20. FAQ &amp; troubleshooting</h2>
+    <h2 id="faq">21. FAQ &amp; troubleshooting</h2>
     <h3>The Install button never appears</h3>
     <p>Chrome-family browsers only show the install prompt on secure origins (<code>https://</code> or <code>http://localhost</code>) and after the service worker has registered. Serve the folder with a local HTTP server (e.g. <code>python -m http.server 8080</code>) and reload once.</p>
 

@@ -1491,6 +1491,16 @@ route('/products', async () => {
       await dbDel('products', id); state.products = state.products.filter(x => x.id !== id); rerender();
       audit('product.delete', { id, name: p.name });
     }));
+    // Double-click any row to open the edit dialog
+    el.querySelectorAll('#pTable tbody tr[data-id]').forEach(tr => {
+      tr.style.cursor = 'pointer';
+      tr.title = 'Double-click to edit';
+      tr.addEventListener('dblclick', (ev) => {
+        if (ev.target.closest('button, input, select, a')) return;
+        const p = state.products.find(x => x.id === tr.dataset.id);
+        if (p) openProduct(p);
+      });
+    });
   };
 
   const openProduct = (existing) => {

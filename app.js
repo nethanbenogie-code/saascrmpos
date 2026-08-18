@@ -188,6 +188,7 @@ const DEFAULT_SETTINGS = {
   autoBackup: 'daily', // off | daily | weekly
   autoBackupKeep: 10,
   lastAutoBackupAt: null,
+  fontScale: 14, // px on <html>; body uses 1rem so all rem-based sizes scale
   onboarded: false
 };
 
@@ -204,8 +205,13 @@ async function loadAll() {
   state.ai = aiCfg || { key: 'ai', enabled: false, provider: 'anthropic', configs: {
     anthropic: aiDefaultConfig('anthropic'),
     ollama: aiDefaultConfig('ollama'),
-    lms: aiDefaultConfig('lms')
+    lms: aiDefaultConfig('lms'),
+    openrouter: aiDefaultConfig('openrouter')
   }};
+  // Backfill on upgrade: ensure openrouter config exists for pre-v18 users
+  if (state.ai.configs && !state.ai.configs.openrouter) {
+    state.ai.configs.openrouter = aiDefaultConfig('openrouter');
+  }
   state.google = googleCfg || {
     key: 'google',
     clientId: DEFAULT_GOOGLE_CLIENT_ID,
@@ -220,7 +226,7 @@ async function loadAll() {
   state.wallets = wallets;
   state.expenses = expenses;
   state.sales = sales;
-  document.documentElement.dataset.theme = state.settings.theme || 'dark';
+  applyAppearance();
 }
 
 async function saveAI() {
@@ -272,7 +278,14 @@ function canUseAI() {
 
 async function saveSettings() {
   await dbPut('settings', state.settings);
-  document.documentElement.dataset.theme = state.settings.theme || 'dark';
+  applyAppearance();
+}
+
+function applyAppearance() {
+  const t = state.settings?.theme || 'dark';
+  document.documentElement.dataset.theme = t;
+  const fs = Number(state.settings?.fontScale) || 14;
+  document.documentElement.style.fontSize = fs + 'px';
 }
 
 /* -------------------- audit -------------------- */
@@ -2747,8 +2760,26 @@ route('/settings', async () => {
             <div class="field"><label>Loyalty pts per ${s.currency}</label><input name="loyaltyPerCurrency" type="number" step="0.01" value="${s.loyaltyPerCurrency}"></div>
             <div class="field"><label>1 pt worth</label><input name="loyaltyRedeemValue" type="number" step="0.001" value="${s.loyaltyRedeemValue}"></div>
           </div>
-          <div class="field"><label>Theme</label>
-            <select name="theme"><option value="dark" ${s.theme === 'dark' ? 'selected' : ''}>Dark</option><option value="light" ${s.theme === 'light' ? 'selected' : ''}>Light</option></select>
+          <div class="row">
+            <div class="field"><label>Theme</label>
+              <select name="theme">
+                <option value="dark"     ${s.theme === 'dark'     ? 'selected' : ''}>Dark</option>
+                <option value="light"    ${s.theme === 'light'    ? 'selected' : ''}>Light</option>
+                <option value="midnight" ${s.theme === 'midnight' ? 'selected' : ''}>Midnight (deep blue)</option>
+                <option value="sunset"   ${s.theme === 'sunset'   ? 'selected' : ''}>Sunset (warm amber)</option>
+                <option value="forest"   ${s.theme === 'forest'   ? 'selected' : ''}>Forest (emerald)</option>
+                <option value="contrast" ${s.theme === 'contrast' ? 'selected' : ''}>High contrast</option>
+              </select>
+            </div>
+            <div class="field"><label>Font size</label>
+              <select name="fontScale">
+                <option value="12" ${Number(s.fontScale)===12?'selected':''}>Small (12px)</option>
+                <option value="14" ${Number(s.fontScale)===14||!s.fontScale?'selected':''}>Normal (14px)</option>
+                <option value="16" ${Number(s.fontScale)===16?'selected':''}>Large (16px)</option>
+                <option value="18" ${Number(s.fontScale)===18?'selected':''}>Extra large (18px)</option>
+                <option value="20" ${Number(s.fontScale)===20?'selected':''}>Huge (20px)</option>
+              </select>
+            </div>
           </div>
           <button class="btn primary" id="saveSettings">Save settings</button>
         </div>
@@ -2780,9 +2811,10 @@ route('/settings', async () => {
           </div>
           <div class="field"><label>Provider</label>
             <select name="aiProvider">
-              <option value="anthropic" ${state.ai?.provider === 'anthropic' ? 'selected' : ''}>Anthropic (cloud)</option>
-              <option value="ollama" ${state.ai?.provider === 'ollama' ? 'selected' : ''}>Ollama (local)</option>
-              <option value="lms" ${state.ai?.provider === 'lms' ? 'selected' : ''}>LM Studio (local)</option>
+              <option value="anthropic"  ${state.ai?.provider === 'anthropic'  ? 'selected' : ''}>Anthropic (cloud)</option>
+              <option value="openrouter" ${state.ai?.provider === 'openrouter' ? 'selected' : ''}>OpenRouter (cloud — many models)</option>
+              <option value="ollama"     ${state.ai?.provider === 'ollama'     ? 'selected' : ''}>Ollama (local)</option>
+              <option value="lms"        ${state.ai?.provider === 'lms'        ? 'selected' : ''}>LM Studio (local)</option>
             </select>
           </div>
           <div class="field"><label>&nbsp;</label>
@@ -2887,7 +2919,7 @@ route('/settings', async () => {
       const inputs = el.querySelectorAll('[name]');
       for (const i of inputs) {
         const key = i.name; let v = i.value;
-        if (['taxRate', 'loyaltyPerCurrency', 'loyaltyRedeemValue', 'autoBackupKeep'].includes(key)) v = Number(v) || 0;
+        if (['taxRate', 'loyaltyPerCurrency', 'loyaltyRedeemValue', 'autoBackupKeep', 'fontScale'].includes(key)) v = Number(v) || 0;
         if (key === 'taxInclusive') v = v === '1';
         state.settings[key] = v;
       }
@@ -3025,6 +3057,7 @@ route('/settings', async () => {
       const cfg = state.ai.configs?.[provider] || aiDefaultConfig(provider);
       const hostHint = {
         anthropic: 'https://api.anthropic.com',
+        openrouter: 'https://openrouter.ai/api/v1 — get an API key at openrouter.ai. Try models like <code>openai/gpt-4o-mini</code>, <code>anthropic/claude-3.5-sonnet</code>, <code>meta-llama/llama-3.3-70b-instruct</code>, <code>google/gemini-2.0-flash-exp:free</code>',
         ollama: 'http://localhost:11434 — enable CORS by setting env <code>OLLAMA_ORIGINS=' + location.origin + '</code> before starting Ollama',
         lms: 'http://localhost:1234/v1 — in LM Studio, enable "Serve on network" and "Enable CORS" in the Developer tab'
       }[provider];
@@ -3032,7 +3065,7 @@ route('/settings', async () => {
         <div class="grid cols-3" style="margin-top:8px">
           <div class="field"><label>Base URL</label><input name="aiBaseUrl" value="${escapeHtml(cfg.baseUrl || '')}"></div>
           <div class="field"><label>Model</label><input name="aiModel" value="${escapeHtml(cfg.model || '')}"></div>
-          <div class="field"><label>${provider === 'anthropic' ? 'API key' : 'API key (optional)'}</label><input name="aiApiKey" type="password" value="${escapeHtml(cfg.apiKey || '')}"></div>
+          <div class="field"><label>${(provider === 'anthropic' || provider === 'openrouter') ? 'API key' : 'API key (optional)'}</label><input name="aiApiKey" type="password" value="${escapeHtml(cfg.apiKey || '')}"></div>
           <div class="field"><label>Max tokens</label><input name="aiMaxTokens" type="number" min="16" max="8192" value="${cfg.maxTokens || 1024}"></div>
           <div class="field"><label>Temperature</label><input name="aiTemperature" type="number" step="0.05" min="0" max="2" value="${cfg.temperature ?? 0.4}"></div>
         </div>
@@ -3042,9 +3075,10 @@ route('/settings', async () => {
     };
     const collectProviderCfg = () => {
       const provider = $('[name=aiProvider]', el).value;
+      const defaults = AI_DEFAULTS[provider] || {};
       const cfg = {
-        baseUrl: $('[name=aiBaseUrl]', el).value.trim() || AI_DEFAULTS[provider].baseUrl,
-        model: $('[name=aiModel]', el).value.trim() || AI_DEFAULTS[provider].model,
+        baseUrl: $('[name=aiBaseUrl]', el).value.trim() || defaults.baseUrl,
+        model: $('[name=aiModel]', el).value.trim() || defaults.model,
         apiKey: $('[name=aiApiKey]', el).value,
         maxTokens: Math.max(16, Number($('[name=aiMaxTokens]', el).value) || 1024),
         temperature: Math.max(0, Math.min(2, Number($('[name=aiTemperature]', el).value) || 0.4))
@@ -3535,7 +3569,7 @@ function openAIChat() {
   if (!canUseAI()) { toast('AI Assistant is not enabled for your account.', 'warn'); return; }
   const provider = state.ai.provider;
   const cfg = state.ai.configs?.[provider] || aiDefaultConfig(provider);
-  const providerName = { anthropic: 'Anthropic', ollama: 'Ollama', lms: 'LM Studio' }[provider];
+  const providerName = { anthropic: 'Anthropic', ollama: 'Ollama', lms: 'LM Studio', openrouter: 'OpenRouter' }[provider];
 
   const body = document.createElement('div');
   body.style.display = 'flex';

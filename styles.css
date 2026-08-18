@@ -28,11 +28,63 @@
   --shadow: 0 10px 30px rgba(15,23,42,.08);
   color-scheme: light;
 }
+:root[data-theme="midnight"] {
+  --bg: #050a1f;
+  --panel: #0a1230;
+  --panel-2: #0f1a44;
+  --panel-3: #182860;
+  --border: #1e2f6b;
+  --text: #e6ecff;
+  --muted: #9aa8d9;
+  --accent: #60a5fa;
+  --accent-2: #3730a3;
+  color-scheme: dark;
+}
+:root[data-theme="sunset"] {
+  --bg: #150806;
+  --panel: #1e0f0b;
+  --panel-2: #2b1712;
+  --panel-3: #3b1e17;
+  --border: #4a2a21;
+  --text: #fdece0;
+  --muted: #c9a99a;
+  --accent: #fb923c;
+  --accent-2: #b91c1c;
+  color-scheme: dark;
+}
+:root[data-theme="forest"] {
+  --bg: #04120b;
+  --panel: #071e12;
+  --panel-2: #0b2a18;
+  --panel-3: #124026;
+  --border: #1c5033;
+  --text: #dcf3e4;
+  --muted: #93c0a5;
+  --accent: #34d399;
+  --accent-2: #065f46;
+  color-scheme: dark;
+}
+:root[data-theme="contrast"] {
+  --bg: #000000;
+  --panel: #0b0b0b;
+  --panel-2: #171717;
+  --panel-3: #262626;
+  --border: #525252;
+  --text: #ffffff;
+  --muted: #d4d4d4;
+  --accent: #fde047;
+  --accent-2: #fbbf24;
+  --good: #4ade80;
+  --warn: #facc15;
+  --bad: #fb7185;
+  color-scheme: dark;
+}
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; height: 100%; }
+html { font-size: 14px; }
 body {
-  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+  font: 1rem/1.45 system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
   color: var(--text);
   background:
     radial-gradient(1200px 600px at 100% -10%, rgba(79,70,229,.15), transparent 60%),

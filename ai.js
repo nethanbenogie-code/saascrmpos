@@ -22,6 +22,13 @@ export const AI_DEFAULTS = {
     apiKey: 'lm-studio',
     maxTokens: 1024,
     temperature: 0.4
+  },
+  openrouter: {
+    baseUrl: 'https://openrouter.ai/api/v1',
+    model: 'openai/gpt-4o-mini',
+    apiKey: '',
+    maxTokens: 1024,
+    temperature: 0.4
   }
 };
 
@@ -71,6 +78,18 @@ export async function testConnection(provider, cfg) {
       const list = j.data || [];
       return { ok: true, info: `LM Studio OK · ${list.length} model(s) loaded${list[0] ? ` (${list[0].id})` : ''}` };
     }
+    if (provider === 'openrouter') {
+      if (!cfg.apiKey) throw new Error('No API key set. Grab one at openrouter.ai.');
+      const r = await fetch((cfg.baseUrl || AI_DEFAULTS.openrouter.baseUrl) + '/models', {
+        headers: { 'Authorization': 'Bearer ' + cfg.apiKey }
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status + ': ' + (await r.text()).slice(0, 200));
+      const j = await r.json();
+      const list = j.data || [];
+      const has = list.some(m => m.id === cfg.model);
+      const suffix = has ? '' : ` · warning: "${cfg.model}" not in your model list`;
+      return { ok: true, info: `OpenRouter OK · ${list.length} models available${suffix}` };
+    }
     throw new Error('Unknown provider: ' + provider);
   } catch (e) {
     return { ok: false, error: e.message };
@@ -88,7 +107,11 @@ export async function testConnection(provider, cfg) {
 export async function* chatStream(provider, cfg, systemPrompt, messages, signal) {
   if (provider === 'anthropic') yield* streamAnthropic(cfg, systemPrompt, messages, signal);
   else if (provider === 'ollama') yield* streamOllama(cfg, systemPrompt, messages, signal);
-  else if (provider === 'lms') yield* streamOpenAI(cfg, systemPrompt, messages, signal);
+  else if (provider === 'lms') yield* streamOpenAI(cfg, systemPrompt, messages, signal, AI_DEFAULTS.lms.baseUrl);
+  else if (provider === 'openrouter') yield* streamOpenAI(cfg, systemPrompt, messages, signal, AI_DEFAULTS.openrouter.baseUrl, {
+    'HTTP-Referer': (typeof location !== 'undefined' ? location.origin : 'https://lysipos.local'),
+    'X-Title': 'LysiPOS'
+  });
   else throw new Error('Unknown provider: ' + provider);
 }
 
@@ -135,13 +158,14 @@ async function* streamOllama(cfg, sys, msgs, signal) {
   yield* readNDJSON(resp.body, (obj) => obj.message?.content || null, signal);
 }
 
-async function* streamOpenAI(cfg, sys, msgs, signal) {
+async function* streamOpenAI(cfg, sys, msgs, signal, defaultBase = AI_DEFAULTS.lms.baseUrl, extraHeaders = {}) {
   const messages = [{ role: 'system', content: sys }, ...msgs.map(m => ({ role: m.role, content: m.content }))];
-  const resp = await fetch((cfg.baseUrl || AI_DEFAULTS.lms.baseUrl) + '/chat/completions', {
+  const resp = await fetch((cfg.baseUrl || defaultBase) + '/chat/completions', {
     method: 'POST', signal,
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + (cfg.apiKey || 'lm-studio')
+      'Authorization': 'Bearer ' + (cfg.apiKey || 'lm-studio'),
+      ...extraHeaders
     },
     body: JSON.stringify({
       model: cfg.model || 'local-model',
@@ -150,7 +174,7 @@ async function* streamOpenAI(cfg, sys, msgs, signal) {
       temperature: cfg.temperature ?? 0.4
     })
   });
-  if (!resp.ok) { const t = await resp.text(); throw new Error('LM Studio ' + resp.status + ': ' + t.slice(0, 300)); }
+  if (!resp.ok) { const t = await resp.text(); throw new Error(resp.status + ': ' + t.slice(0, 300)); }
   yield* readSSE(resp.body, (data) => {
     if (data === '[DONE]') return null;
     try {

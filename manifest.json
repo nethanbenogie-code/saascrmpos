@@ -20,6 +20,10 @@
     { "src": "icon.svg",              "sizes": "any",     "type": "image/svg+xml", "purpose": "any" },
     { "src": "icon-maskable.svg",     "sizes": "any",     "type": "image/svg+xml", "purpose": "maskable" }
   ],
+  "screenshots": [
+    { "src": "screenshot-wide.png",   "sizes": "1280x720",  "type": "image/png", "form_factor": "wide",   "label": "LysiPOS dashboard on desktop" },
+    { "src": "screenshot-narrow.png", "sizes": "750x1334",  "type": "image/png", "form_factor": "narrow", "label": "LysiPOS features on mobile" }
+  ],
   "shortcuts": [
     { "name": "New Sale",   "short_name": "Sale", "url": "./index.html#/pos",       "description": "Open the POS to ring a sale",
       "icons": [{ "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }] },

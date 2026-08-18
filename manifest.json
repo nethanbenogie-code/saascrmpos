@@ -1,6 +1,7 @@
 {
   "name": "LysiPOS — SaaS · CRM · POS",
   "short_name": "LysiPOS",
+  "id": "/saascrmpos/",
   "description": "Offline-first Point-of-Sale, CRM and business SaaS in one installable app. Built by Gieo Software.",
   "start_url": "./index.html",
   "scope": "./",
@@ -8,14 +9,23 @@
   "orientation": "any",
   "background_color": "#0b1220",
   "theme_color": "#0f172a",
+  "lang": "en",
+  "dir": "ltr",
   "categories": ["business", "productivity", "finance"],
   "icons": [
-    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
-    { "src": "icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+    { "src": "icon-192.png",          "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png",          "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-192-maskable.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon.svg",              "sizes": "any",     "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon-maskable.svg",     "sizes": "any",     "type": "image/svg+xml", "purpose": "maskable" }
   ],
   "shortcuts": [
-    { "name": "New Sale", "short_name": "Sale", "url": "./index.html#/pos", "description": "Open the POS to ring a sale" },
-    { "name": "Customers", "short_name": "CRM", "url": "./index.html#/customers" },
-    { "name": "Dashboard", "short_name": "Home", "url": "./index.html#/dashboard" }
+    { "name": "New Sale",   "short_name": "Sale", "url": "./index.html#/pos",       "description": "Open the POS to ring a sale",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Customers",  "short_name": "CRM",  "url": "./index.html#/customers",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Dashboard",  "short_name": "Home", "url": "./index.html#/dashboard",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }] }
   ]
 }

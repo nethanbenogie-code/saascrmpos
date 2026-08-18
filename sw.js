@@ -1,4 +1,4 @@
-const VERSION = 'lysipos-v18';
+const VERSION = 'lysipos-v19';
 const CORE = [
   './',
   './index.html',
@@ -11,6 +11,11 @@ const CORE = [
   './manifest.json',
   './icon.svg',
   './icon-maskable.svg',
+  './icon-192.png',
+  './icon-512.png',
+  './icon-192-maskable.png',
+  './icon-512-maskable.png',
+  './apple-touch-icon.png',
   './manual.html',
   './restore-admin.html'
 ];
